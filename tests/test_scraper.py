@@ -30,7 +30,7 @@ SAMPLE_TABLE_HTML = """
                 </tr>
                 <tr>
                     <td><a href="/international/league-b/2023.html">2023-24</a></td>
-                    <td><a href="/international/league-b/">Liga ACB</a></td>
+                    <td><a href="/international/league-b/2023.html">Liga ACB</a></td>
                 </tr>
                 <tr>
                     <td><a href="/international/league-c/2022.html">2022-23</a></td>
@@ -71,7 +71,14 @@ class TestBasketballReferenceScraper(unittest.TestCase):
         )
         self.assertEqual(len(df), 2, "Rows missing League should be dropped")
         self.assertEqual(df.iloc[0]['Season'], '2024-25')
-        self.assertTrue(df.iloc[0]['Schedule URL'].endswith('2024-schedule.html'))
+        self.assertEqual(
+            df.iloc[0]['Schedule URL'],
+            'https://www.basketball-reference.com/international/league-a/2024-schedule.html'
+        )
+        self.assertEqual(
+            df.iloc[1]['Schedule URL'],
+            'https://www.basketball-reference.com/international/league-b/2023-schedule.html'
+        )
         self.assertEqual(
             df.iloc[0]['League URL'],
             'https://www.basketball-reference.com/international/league-a/'
@@ -90,13 +97,12 @@ class TestBasketballReferenceScraper(unittest.TestCase):
             return SAMPLE_SCHEDULE_HTML if url and url.endswith('-schedule.html') else SAMPLE_TABLE_HTML
 
         with patch.object(self.scraper, 'fetch_data', side_effect=fake_fetch) as mocked_fetch:
-            schedules = self.scraper.scrape_league_schedules(df)
+            schedules_df = self.scraper.scrape_league_schedules(df)
 
-        self.assertEqual(len(schedules), len(df))
-        for key, schedule_df in schedules.items():
-            self.assertIn('Season', schedule_df.columns)
-            self.assertIn('League', schedule_df.columns)
-            self.assertEqual(len(schedule_df), 1)
+        self.assertEqual(len(schedules_df), len(df))
+        self.assertIn('Season', schedules_df.columns)
+        self.assertIn('League', schedules_df.columns)
+        self.assertTrue((schedules_df['Schedule URL'].str.endswith('-schedule.html')).all())
         self.assertGreaterEqual(mocked_fetch.call_count, len(df))
 
 

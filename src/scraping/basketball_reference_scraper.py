@@ -77,8 +77,10 @@ class BasketballReferenceScraper:
         year = self._season_year_from_url(season_url)
         if not (year and league_url):
             return None
-        normalized_league_url = league_url.rstrip('/') + '/'
-        return f"{normalized_league_url}{year}-schedule.html"
+        normalized_league_url = league_url.rstrip('/')
+        if normalized_league_url.endswith('.html'):
+            normalized_league_url = normalized_league_url.rsplit('/', 1)[0]
+        return f"{normalized_league_url}/{year}-schedule.html"
 
     @staticmethod
     def _parse_first_table(html: str) -> pd.DataFrame:
@@ -147,17 +149,19 @@ class BasketballReferenceScraper:
         schedule_df['Schedule URL'] = schedule_url
         return schedule_df
 
-    def scrape_league_schedules(self, df: Optional[pd.DataFrame] = None) -> dict[str, pd.DataFrame]:
+    def scrape_league_schedules(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         base_df = df if df is not None else self.scrape()
-        schedules: dict[str, pd.DataFrame] = {}
+        schedules: list[pd.DataFrame] = []
         for _, row in base_df.iterrows():
             schedule_url = row.get('Schedule URL')
             if not schedule_url:
                 continue
-            schedules[f"{row['Season']}|{row['League']}"] = self.scrape_league_schedule(
-                row['Season'], row['League'], schedule_url
-            )
-        return schedules
+            schedule_df = self.scrape_league_schedule(row['Season'], row['League'], schedule_url)
+            schedules.append(schedule_df)
+
+        if schedules:
+            return pd.concat(schedules, ignore_index=True)
+        return pd.DataFrame(columns=['Season', 'League', 'Schedule URL'])
 
 
 def scrape_data(scraper_cls: Optional[Type[BasketballReferenceScraper]] = None) -> pd.DataFrame:

@@ -16,14 +16,13 @@ def main():
     print(f"Scraped {len(seasons_df)} season rows")
 
     # Step 2: Scrape every available league schedule using the generated URLs
-    schedules_map = scraper.scrape_league_schedules(seasons_df)
-    if schedules_map:
-        schedules_df = pd.concat(schedules_map.values(), ignore_index=True)
+    schedules_df = scraper.scrape_league_schedules(seasons_df)
+    if not schedules_df.empty:
+        league_count = schedules_df['League'].nunique()
         print(
-            f"Scraped {len(schedules_df)} schedule rows across {len(schedules_map)} leagues"
+            f"Scraped {len(schedules_df)} schedule rows across {league_count} leagues"
         )
     else:
-        schedules_df = pd.DataFrame()
         print("No schedule URLs were available.")
 
     # Step 3: Save the raw data locally / to the cloud as needed
