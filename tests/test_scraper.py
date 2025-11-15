@@ -4,8 +4,8 @@ from unittest.mock import patch
 import pandas as pd
 
 from src.scraping.basketball_reference_scraper import (
-        BasketballReferenceScraper,
-        scrape_data,
+    BasketballReferenceScraper,
+    scrape_data,
 )
 
 
@@ -15,8 +15,12 @@ SAMPLE_TABLE_HTML = """
         <table id="international-years">
             <thead>
                 <tr>
+                    <th></th>
+                    <th>Details</th>
+                </tr>
+                <tr>
                     <th>Season</th>
-                    <th>Leagues</th>
+                    <th>League</th>
                 </tr>
             </thead>
             <tbody>
@@ -28,6 +32,25 @@ SAMPLE_TABLE_HTML = """
                     <td><a href="/international/league-b/2023.html">2023-24</a></td>
                     <td><a href="/international/league-b/">Liga ACB</a></td>
                 </tr>
+                <tr>
+                    <td><a href="/international/league-c/2022.html">2022-23</a></td>
+                    <td></td>
+                </tr>
+            </tbody>
+        </table>
+    </body>
+</html>
+"""
+
+SAMPLE_SCHEDULE_HTML = """
+<html>
+    <body>
+        <table id="schedule">
+            <thead>
+                <tr><th>Date</th><th>Home</th><th>Away</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>2024-10-01</td><td>Team A</td><td>Team B</td></tr>
             </tbody>
         </table>
     </body>
@@ -36,28 +59,46 @@ SAMPLE_TABLE_HTML = """
 
 
 class TestBasketballReferenceScraper(unittest.TestCase):
-        def setUp(self):
-                self.scraper = BasketballReferenceScraper()
+    def setUp(self):
+        self.scraper = BasketballReferenceScraper()
 
-        def test_parse_data_returns_expected_columns(self):
-                df = self.scraper.parse_data(SAMPLE_TABLE_HTML)
-                self.assertIsInstance(df, pd.DataFrame)
-                self.assertListEqual(
-                        list(df.columns),
-                        ['Season', 'Season URL', 'League', 'League URL']
-                )
-                self.assertEqual(df.iloc[0]['Season'], '2024-25')
-                self.assertEqual(
-                        df.iloc[0]['League URL'],
-                        'https://www.basketball-reference.com/international/league-a/'
-                )
+    def test_parse_data_returns_expected_columns(self):
+        df = self.scraper.parse_data(SAMPLE_TABLE_HTML)
+        self.assertIsInstance(df, pd.DataFrame)
+        self.assertListEqual(
+            list(df.columns),
+            ['Season', 'Season URL', 'League', 'League URL', 'Schedule URL']
+        )
+        self.assertEqual(len(df), 2, "Rows missing League should be dropped")
+        self.assertEqual(df.iloc[0]['Season'], '2024-25')
+        self.assertTrue(df.iloc[0]['Schedule URL'].endswith('2024-schedule.html'))
+        self.assertEqual(
+            df.iloc[0]['League URL'],
+            'https://www.basketball-reference.com/international/league-a/'
+        )
 
-        @patch('src.scraping.basketball_reference_scraper.BasketballReferenceScraper.fetch_data', return_value=SAMPLE_TABLE_HTML)
-        def test_scrape_data_helper(self, mock_fetch):
-                df = scrape_data()
-                self.assertEqual(len(df), 2)
-                mock_fetch.assert_called_once()
+    @patch('src.scraping.basketball_reference_scraper.BasketballReferenceScraper.fetch_data', return_value=SAMPLE_TABLE_HTML)
+    def test_scrape_data_helper(self, mock_fetch):
+        df = scrape_data()
+        self.assertEqual(len(df), 2)
+        mock_fetch.assert_called_once()
+
+    def test_scrape_league_schedules(self):
+        df = self.scraper.parse_data(SAMPLE_TABLE_HTML)
+
+        def fake_fetch(url=None):
+            return SAMPLE_SCHEDULE_HTML if url and url.endswith('-schedule.html') else SAMPLE_TABLE_HTML
+
+        with patch.object(self.scraper, 'fetch_data', side_effect=fake_fetch) as mocked_fetch:
+            schedules = self.scraper.scrape_league_schedules(df)
+
+        self.assertEqual(len(schedules), len(df))
+        for key, schedule_df in schedules.items():
+            self.assertIn('Season', schedule_df.columns)
+            self.assertIn('League', schedule_df.columns)
+            self.assertEqual(len(schedule_df), 1)
+        self.assertGreaterEqual(mocked_fetch.call_count, len(df))
 
 
 if __name__ == '__main__':
-        unittest.main()
+    unittest.main()

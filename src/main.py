@@ -1,19 +1,37 @@
-# main.py
+"""Entry point for scraping Basketball Reference seasons and league schedules."""
 
 import pandas as pd
-from src.scraping.basketball_reference_scraper import scrape_data
-from src.storage.local_store import save_to_local
-from src.storage.cloud_store import save_to_cloud
+
+from src.scraping.basketball_reference_scraper import BasketballReferenceScraper
+
+# from src.storage.local_store import save_to_local
+# from src.storage.cloud_store import save_to_cloud
+
 
 def main():
-    # Step 1: Scrape data from Basketball Reference
-    data = scrape_data()
+    scraper = BasketballReferenceScraper()
 
-    # Step 2: Save the raw data locally
-    save_to_local(data, 'data/raw/basketball_data.csv')
+    # Step 1: Scrape the international seasons overview
+    seasons_df = scraper.scrape().head()
+    print(f"Scraped {len(seasons_df)} season rows")
 
-    # Step 3: Optionally, save the data to cloud storage
-    save_to_cloud(data, 'basketball_data')
+    # Step 2: Scrape every available league schedule using the generated URLs
+    schedules_map = scraper.scrape_league_schedules(seasons_df)
+    if schedules_map:
+        schedules_df = pd.concat(schedules_map.values(), ignore_index=True)
+        print(
+            f"Scraped {len(schedules_df)} schedule rows across {len(schedules_map)} leagues"
+        )
+    else:
+        schedules_df = pd.DataFrame()
+        print("No schedule URLs were available.")
+
+    # Step 3: Save the raw data locally / to the cloud as needed
+    # save_to_local(seasons_df, 'data/raw/international_seasons.csv')
+    # save_to_local(schedules_df, 'data/raw/league_schedules.csv')
+    # save_to_cloud(seasons_df, 'international_seasons')
+    # save_to_cloud(schedules_df, 'league_schedules')
+
 
 if __name__ == "__main__":
     main()
