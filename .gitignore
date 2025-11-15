@@ -1,0 +1,40 @@
+# Virtual environments
+.venv/
+ENV/
+venv/
+
+# Environment variables and secrets
+.env
+.env.*
+*.env
+
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+
+# Test and coverage outputs
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Data outputs (kept out of git history)
+data/raw/
+data/processed/
+*.csv
+*.parquet
+*.feather
+
+# OS/editor clutter
+.DS_Store
+Thumbs.db
