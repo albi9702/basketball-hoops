@@ -25,11 +25,20 @@ def main():
     else:
         print("No schedule URLs were available.")
 
-    # Step 3: Save the raw data locally / to the cloud as needed
+    # Step 3: Scrape detailed box score tables for each game
+    boxscores_df = scraper.scrape_boxscore_tables(schedules_df)
+    if not boxscores_df.empty:
+        print(f"Scraped {len(boxscores_df)} boxscore rows")
+    else:
+        print("No boxscore data was available.")
+
+    # Step 4: Save the raw data locally / to the cloud as needed
     # save_to_local(seasons_df, 'data/raw/international_seasons.csv')
     # save_to_local(schedules_df, 'data/raw/league_schedules.csv')
+    # save_to_local(boxscores_df, 'data/raw/boxscores.csv')
     # save_to_cloud(seasons_df, 'international_seasons')
     # save_to_cloud(schedules_df, 'league_schedules')
+    # save_to_cloud(boxscores_df, 'boxscores')
 
 
 if __name__ == "__main__":

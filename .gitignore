@@ -34,6 +34,7 @@ data/processed/
 *.csv
 *.parquet
 *.feather
+logs/
 
 # OS/editor clutter
 .DS_Store

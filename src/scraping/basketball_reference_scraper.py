@@ -1,17 +1,34 @@
+import logging
 import re
+import time
 from io import StringIO
+from pathlib import Path
 from typing import Optional, Sequence, Type
 from urllib.parse import urljoin
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment, Tag
+
+LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "scraper.log"
+
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    file_handler = logging.FileHandler(LOG_FILE)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.propagate = False
 
 class BasketballReferenceScraper:
     """Scrapes the international leagues table from Basketball Reference."""
 
     BASE_URL = "https://www.basketball-reference.com"
     INTERNATIONAL_PATH = "/international/years/"
+    REQUEST_DELAY_SECONDS = 1
 
     def __init__(self, relative_path: Optional[str] = None, session: Optional[requests.Session] = None):
         """
@@ -31,9 +48,13 @@ class BasketballReferenceScraper:
 
     def fetch_data(self, url: Optional[str] = None) -> str:
         target_url = url or self.league_url
+        logger.info("Fetching URL: %s", target_url)
+        time.sleep(self.REQUEST_DELAY_SECONDS)
         response = self.session.get(target_url)
         if response.status_code == 200:
+            logger.info("Fetched URL successfully: %s", target_url)
             return response.text
+        logger.error("Failed to fetch URL %s (status %s)", target_url, response.status_code)
         raise Exception(f"Failed to fetch data: {response.status_code}")
 
     @staticmethod
@@ -54,6 +75,13 @@ class BasketballReferenceScraper:
             df = df.copy()
             df.columns = df.columns.get_level_values(1)
         return df
+
+    @staticmethod
+    def _unwrap_commented_tables(soup: BeautifulSoup) -> None:
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            if '<table' in comment:
+                fragment = BeautifulSoup(comment, 'html.parser')
+                comment.replace_with(fragment)
 
     @staticmethod
     def _get_column(df: pd.DataFrame, candidates: Sequence[str], field_name: str) -> pd.Series:
@@ -83,29 +111,84 @@ class BasketballReferenceScraper:
         return f"{normalized_league_url}/{year}-schedule.html"
 
     @staticmethod
-    def _parse_first_table(html: str) -> pd.DataFrame:
+    def _parse_first_table(html: str) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
         soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
-        if not table:
-            raise Exception("No table found on the page.")
-        return pd.read_html(StringIO(str(table)))[0]
-
-    def parse_data(self, html: str) -> pd.DataFrame:
-        soup = BeautifulSoup(html, 'html.parser')
+        BasketballReferenceScraper._unwrap_commented_tables(soup)
         table = soup.find('table')
         if not table:
             raise Exception("No table found on the page.")
 
         table_html = str(table)
-        full_table_df = pd.read_html(StringIO(table_html))[0]
-        full_table_df = self._second_level_columns(full_table_df)
-        link_table_df = None
+        data_df = pd.read_html(StringIO(table_html))[0]
+        link_df = None
         try:
-            link_table_df = pd.read_html(StringIO(table_html), extract_links='body')[0]
-            link_table_df = self._second_level_columns(link_table_df)
+            link_df = pd.read_html(StringIO(table_html), extract_links='body')[0]
         except (TypeError, ValueError):
-            # Older pandas versions do not support extract_links; fallback handled below.
             pass
+
+        return data_df, link_df
+
+    @staticmethod
+    def _parse_game_date(value: object) -> Optional[pd.Timestamp]:
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        if not cleaned or not re.search(r"\b\d{1,2}\b", cleaned):
+            return None
+
+        parsed = pd.to_datetime(cleaned, errors='coerce')
+        if pd.isna(parsed):
+            return None
+        return parsed.normalize()
+
+    def _parse_boxscore_tables(self, html: str) -> dict[str, pd.DataFrame]:
+        soup = BeautifulSoup(html, 'html.parser')
+        self._unwrap_commented_tables(soup)
+        table_elements: dict[str, Tag] = {}
+        role_map = [
+            ('div_box-score-visitor', 'Visitors'),
+            ('div_box-score-home', 'Home')
+        ]
+
+        for div_id, role in role_map:
+            div = soup.find('div', id=div_id)
+            if not div:
+                continue
+            table = div.find('table')
+            if table:
+                table_elements[role] = table
+
+        combined_div = soup.find('div', id='div_box-score')
+        if combined_div:
+            combined_tables = combined_div.find_all('table')
+            for role, table in zip(['Visitors', 'Home'], combined_tables):
+                if role not in table_elements and table:
+                    table_elements[role] = table
+
+        if len(table_elements) < 2:
+            fallback_tables = soup.find_all('table')
+            for table in fallback_tables:
+                missing_roles = [role for role in ['Visitors', 'Home'] if role not in table_elements]
+                if not missing_roles:
+                    break
+                table_elements[missing_roles[0]] = table
+
+        parsed_tables: dict[str, pd.DataFrame] = {}
+        for role, table in table_elements.items():
+            try:
+                df = pd.read_html(StringIO(str(table)))[0]
+                parsed_tables[role] = self._second_level_columns(df)
+            except ValueError:
+                continue
+
+        return parsed_tables
+
+    def parse_data(self, html: str) -> pd.DataFrame:
+        logger.info("Parsing season listings HTML")
+        full_table_df, link_table_df = self._parse_first_table(html)
+        full_table_df = self._second_level_columns(full_table_df)
+        if link_table_df is not None:
+            link_table_df = self._second_level_columns(link_table_df)
 
         season_series = self._get_column(full_table_df, ['Season'], 'Season')
         league_series = self._get_column(full_table_df, ['League', 'Leagues'], 'League')
@@ -134,23 +217,68 @@ class BasketballReferenceScraper:
             lambda row: self._build_schedule_url(row['Season URL'], row['League URL']), axis=1
         )
 
+        logger.info("Parsed %d season rows with schedule URLs", len(df))
         return df
 
     def scrape(self):
+        logger.info("Starting season scrape from %s", self.league_url)
         html = self.fetch_data()
         data = self.parse_data(html)
+        logger.info("Season scrape completed with %d rows", len(data))
         return data
 
     def scrape_league_schedule(self, season: str, league: str, schedule_url: str) -> pd.DataFrame:
+        logger.info("Scraping schedule for %s %s (%s)", league, season, schedule_url)
         html = self.fetch_data(schedule_url)
-        schedule_df = self._parse_first_table(html)
+        schedule_df, schedule_link_df = self._parse_first_table(html)
+        if schedule_link_df is not None:
+            schedule_link_df = self._second_level_columns(schedule_link_df)
+
+        if schedule_link_df is not None:
+            try:
+                date_link_series = self._get_column(schedule_link_df, ['Date'], 'Date URL')
+                date_urls = date_link_series.map(self._extract_href)
+            except Exception:
+                date_urls = pd.Series([None] * len(schedule_df))
+        else:
+            date_urls = pd.Series([None] * len(schedule_df))
+
+        parsed_dates = schedule_df['Date'].map(self._parse_game_date)
+        valid_mask = parsed_dates.notna()
+        schedule_df = schedule_df.loc[valid_mask].reset_index(drop=True)
+        parsed_dates = parsed_dates.loc[valid_mask].reset_index(drop=True)
+        date_urls = date_urls.loc[valid_mask].reset_index(drop=True)
+
+        schedule_df['Date'] = parsed_dates.dt.date
+        schedule_df['Date URL'] = date_urls.map(lambda href: urljoin(self.base_url, href) if href else None)
         schedule_df['Season'] = season
         schedule_df['League'] = league
         schedule_df['Schedule URL'] = schedule_url
+
+        core_columns = ['Date', 'Team', 'PTS', 'Opp', 'PTS.1', 'OT', 'Notes', 'Date URL']
+        for column in core_columns:
+            if column not in schedule_df.columns:
+                schedule_df[column] = None
+
+        ordered_columns = core_columns + ['Season', 'League', 'Schedule URL']
+        schedule_df = schedule_df[ordered_columns]
+
+        rename_map = {
+            'Team': 'Home',
+            'PTS': 'HomePoints',
+            'Opp': 'Visitors',
+            'PTS.1': 'VisitorsPoints',
+            'OT': 'HasGoneOvertime',
+            'Date URL': 'DateURL'
+        }
+        schedule_df = schedule_df.rename(columns=rename_map)
+
+        logger.info("Scraped %d schedule rows for %s %s", len(schedule_df), league, season)
         return schedule_df
 
     def scrape_league_schedules(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         base_df = df if df is not None else self.scrape()
+        logger.info("Scraping schedules for %d season entries", len(base_df))
         schedules: list[pd.DataFrame] = []
         for _, row in base_df.iterrows():
             schedule_url = row.get('Schedule URL')
@@ -160,8 +288,62 @@ class BasketballReferenceScraper:
             schedules.append(schedule_df)
 
         if schedules:
-            return pd.concat(schedules, ignore_index=True)
-        return pd.DataFrame(columns=['Season', 'League', 'Schedule URL'])
+            combined = pd.concat(schedules, ignore_index=True)
+            logger.info("Aggregated %d schedule rows across %d leagues", len(combined), len(base_df))
+            return combined
+        logger.info("No schedules could be scraped from %d seasons", len(base_df))
+        return pd.DataFrame(columns=[
+            'Date', 'Home', 'HomePoints', 'Visitors', 'VisitorsPoints',
+            'HasGoneOvertime', 'Notes', 'DateURL', 'Season', 'League', 'Schedule URL'
+        ])
+
+    def scrape_boxscore_tables(self, schedule_df: pd.DataFrame) -> pd.DataFrame:
+        if schedule_df.empty:
+            logger.info("No schedule rows provided; skipping boxscore scrape")
+            return pd.DataFrame()
+
+        logger.info("Scraping boxscore tables for %d schedule rows", len(schedule_df))
+        results: list[pd.DataFrame] = []
+        html_cache: dict[str, dict[str, pd.DataFrame]] = {}
+
+        for _, row in schedule_df.iterrows():
+            date_url = row.get('DateURL')
+            if not date_url:
+                continue
+
+            if date_url not in html_cache:
+                logger.info("Fetching boxscore page: %s", date_url)
+                html = self.fetch_data(date_url)
+                html_cache[date_url] = self._parse_boxscore_tables(html)
+
+            table_map = html_cache.get(date_url, {})
+            if not table_map:
+                logger.warning("No boxscore tables found for %s", date_url)
+                continue
+
+            team_pairs = [('Visitors', row.get('Visitors')), ('Home', row.get('Home'))]
+            for role, team_name in team_pairs:
+                if team_name is None:
+                    continue
+                table_df = table_map.get(role)
+                if table_df is None:
+                    continue
+                table_df = table_df.copy()
+                table_df['TeamRole'] = role
+                table_df['Team'] = team_name
+                table_df['Date'] = row.get('Date')
+                table_df['Season'] = row.get('Season')
+                table_df['League'] = row.get('League')
+                table_df['Schedule URL'] = row.get('Schedule URL')
+                table_df['DateURL'] = date_url
+                results.append(table_df)
+
+        if results:
+            combined = pd.concat(results, ignore_index=True)
+            logger.info("Collected %d boxscore rows", len(combined))
+            return combined
+        logger.info("No boxscore tables were collected")
+        return pd.DataFrame()
 
 
 def scrape_data(scraper_cls: Optional[Type[BasketballReferenceScraper]] = None) -> pd.DataFrame:
