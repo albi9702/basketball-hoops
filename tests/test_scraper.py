@@ -1,6 +1,6 @@
 import datetime
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -196,6 +196,79 @@ class TestBasketballReferenceScraper(unittest.TestCase):
         self.assertEqual(visitors_row['PTS'], 18)
         self.assertEqual(home_row['PTS'], 20)
         mocked_fetch.assert_called_once_with('https://www.basketball-reference.com/boxscores/202410030AAA.html')
+
+    def test_scrape_boxscore_tables_streams_to_store(self):
+        schedule_df = pd.DataFrame({
+            'Date': [datetime.date(2025, 10, 3), datetime.date(2025, 10, 4)],
+            'Home': ['Team A', 'Team C'],
+            'HomePoints': [85, 90],
+            'Visitors': ['Team B', 'Team D'],
+            'VisitorsPoints': [80, 88],
+            'HasGoneOvertime': ['', 'OT'],
+            'Notes': ['Opening night', ''],
+            'DateURL': [
+                'https://www.basketball-reference.com/boxscores/202410030AAA.html',
+                'https://www.basketball-reference.com/boxscores/202410040BBB.html',
+            ],
+            'Season': ['2024-25', '2024-25'],
+            'League': ['EuroLeague', 'EuroLeague'],
+            'Schedule URL': [
+                'https://www.basketball-reference.com/international/league-a/2024-schedule.html',
+                'https://www.basketball-reference.com/international/league-a/2024-schedule.html',
+            ],
+        })
+
+        mock_store = MagicMock()
+
+        with patch.object(self.scraper, 'fetch_data', return_value=SAMPLE_BOXSCORE_HTML):
+            self.scraper.scrape_boxscore_tables(schedule_df, store=mock_store)
+
+        self.assertEqual(mock_store.save_boxscores.call_count, 2)
+        first_args, first_kwargs = mock_store.save_boxscores.call_args_list[0]
+        second_args, second_kwargs = mock_store.save_boxscores.call_args_list[1]
+        self.assertEqual(first_kwargs.get('if_exists'), 'replace')
+        self.assertEqual(second_kwargs.get('if_exists'), 'append')
+        self.assertGreater(len(first_args[0]), 0)
+        self.assertGreater(len(second_args[0]), 0)
+
+    def test_filter_schedule_by_date(self):
+        schedule_df = pd.DataFrame({
+            'Date': [datetime.date(2025, 10, 3), datetime.date(2025, 10, 4)],
+            'Home': ['Team A', 'Team C'],
+            'League': ['EuroLeague', 'EuroLeague'],
+        })
+
+        filtered = self.scraper.filter_schedule_by_date(
+            schedule_df,
+            datetime.date(2025, 10, 4),
+        )
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered.iloc[0]['Home'], 'Team C')
+
+    def test_scrape_boxscore_tables_skips_failed_fetch(self):
+        schedule_df = pd.DataFrame({
+            'Date': [datetime.date(2025, 10, 3)],
+            'Home': ['Team A'],
+            'HomePoints': [85],
+            'Visitors': ['Team B'],
+            'VisitorsPoints': [80],
+            'HasGoneOvertime': [''],
+            'Notes': ['Opening night'],
+            'DateURL': ['https://www.basketball-reference.com/boxscores/202410030AAA.html'],
+            'Season': ['2024-25'],
+            'League': ['EuroLeague'],
+            'Schedule URL': ['https://www.basketball-reference.com/international/league-a/2024-schedule.html']
+        })
+
+        mock_store = MagicMock()
+
+        with patch.object(self.scraper, 'fetch_data', side_effect=Exception("boom")) as mocked_fetch:
+            result_df = self.scraper.scrape_boxscore_tables(schedule_df, store=mock_store)
+
+        self.assertTrue(result_df.empty)
+        mocked_fetch.assert_called_once()
+        mock_store.save_boxscores.assert_not_called()
 
 
 if __name__ == '__main__':

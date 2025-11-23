@@ -1,14 +1,18 @@
 import logging
 import re
 import time
+from datetime import date
 from io import StringIO
 from pathlib import Path
-from typing import Optional, Sequence, Type
+from typing import Optional, Sequence, Type, TYPE_CHECKING
 from urllib.parse import urljoin
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup, Comment, Tag
+
+if TYPE_CHECKING:
+    from src.storage.database_store import DatabaseStore
 
 LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -28,7 +32,7 @@ class BasketballReferenceScraper:
 
     BASE_URL = "https://www.basketball-reference.com"
     INTERNATIONAL_PATH = "/international/years/"
-    REQUEST_DELAY_SECONDS = 1
+    REQUEST_DELAY_SECONDS = 2
 
     def __init__(self, relative_path: Optional[str] = None, session: Optional[requests.Session] = None):
         """
@@ -276,6 +280,16 @@ class BasketballReferenceScraper:
         logger.info("Scraped %d schedule rows for %s %s", len(schedule_df), league, season)
         return schedule_df
 
+    @staticmethod
+    def filter_schedule_by_date(
+        schedule_df: pd.DataFrame,
+        target_date: Optional[date],
+    ) -> pd.DataFrame:
+        if target_date is None or schedule_df.empty:
+            return schedule_df
+        filtered = schedule_df.loc[schedule_df['Date'] == target_date]
+        return filtered.reset_index(drop=True)
+
     def scrape_league_schedules(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         base_df = df if df is not None else self.scrape()
         logger.info("Scraping schedules for %d season entries", len(base_df))
@@ -297,7 +311,11 @@ class BasketballReferenceScraper:
             'HasGoneOvertime', 'Notes', 'DateURL', 'Season', 'League', 'Schedule URL'
         ])
 
-    def scrape_boxscore_tables(self, schedule_df: pd.DataFrame) -> pd.DataFrame:
+    def scrape_boxscore_tables(
+        self,
+        schedule_df: pd.DataFrame,
+        store: Optional["DatabaseStore"] = None,
+    ) -> pd.DataFrame:
         if schedule_df.empty:
             logger.info("No schedule rows provided; skipping boxscore scrape")
             return pd.DataFrame()
@@ -305,6 +323,9 @@ class BasketballReferenceScraper:
         logger.info("Scraping boxscore tables for %d schedule rows", len(schedule_df))
         results: list[pd.DataFrame] = []
         html_cache: dict[str, dict[str, pd.DataFrame]] = {}
+        first_chunk = True
+        skipped_dates: list[str] = []
+        logged_boxscores: set[str] = set()
 
         for _, row in schedule_df.iterrows():
             date_url = row.get('DateURL')
@@ -312,15 +333,37 @@ class BasketballReferenceScraper:
                 continue
 
             if date_url not in html_cache:
-                logger.info("Fetching boxscore page: %s", date_url)
-                html = self.fetch_data(date_url)
-                html_cache[date_url] = self._parse_boxscore_tables(html)
+                if date_url not in logged_boxscores:
+                    logger.info(
+                        "Scraping boxscore for %s vs %s on %s (%s)",
+                        row.get('Home'),
+                        row.get('Visitors'),
+                        row.get('Date'),
+                        date_url,
+                    )
+                    logged_boxscores.add(date_url)
+                try:
+                    html = self.fetch_data(date_url)
+                    html_cache[date_url] = self._parse_boxscore_tables(html)
+                except Exception as exc:  # noqa: BLE001 we want to skip only this game
+                    logger.error(
+                        "Failed to fetch boxscore %s for %s vs %s (%s %s): %s",
+                        date_url,
+                        row.get('Home'),
+                        row.get('Visitors'),
+                        row.get('League'),
+                        row.get('Season'),
+                        exc,
+                    )
+                    skipped_dates.append(date_url)
+                    continue
 
             table_map = html_cache.get(date_url, {})
             if not table_map:
                 logger.warning("No boxscore tables found for %s", date_url)
                 continue
 
+            row_tables: list[pd.DataFrame] = []
             team_pairs = [('Visitors', row.get('Visitors')), ('Home', row.get('Home'))]
             for role, team_name in team_pairs:
                 if team_name is None:
@@ -336,12 +379,33 @@ class BasketballReferenceScraper:
                 table_df['League'] = row.get('League')
                 table_df['Schedule URL'] = row.get('Schedule URL')
                 table_df['DateURL'] = date_url
-                results.append(table_df)
+                row_tables.append(table_df)
+
+            if not row_tables:
+                continue
+
+            row_df = pd.concat(row_tables, ignore_index=True)
+            results.append(row_df)
+
+            if store is not None:
+                mode = "replace" if first_chunk else "append"
+                store.save_boxscores(row_df, if_exists=mode)
+                first_chunk = False
 
         if results:
             combined = pd.concat(results, ignore_index=True)
             logger.info("Collected %d boxscore rows", len(combined))
+            if skipped_dates:
+                logger.info(
+                    "Skipped %d boxscore pages due to fetch errors.",
+                    len(skipped_dates),
+                )
             return combined
+        if skipped_dates:
+            logger.info(
+                "Skipped %d boxscore pages due to fetch errors.",
+                len(skipped_dates),
+            )
         logger.info("No boxscore tables were collected")
         return pd.DataFrame()
 

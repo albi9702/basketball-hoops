@@ -1,0 +1,147 @@
+"""Helpers for persisting scraped data to a relational database (PostgreSQL by default)."""
+
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+import pandas as pd
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
+
+from src.configs.settings import DatabaseConfig
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+
+
+class DatabaseStore:
+    """Write scraped DataFrames into relational tables with configurable names."""
+
+    def __init__(
+        self,
+        url: Optional[str] = None,
+        schema: Optional[str] = None,
+        season_table: Optional[str] = None,
+        schedule_table: Optional[str] = None,
+        boxscore_table: Optional[str] = None,
+    ) -> None:
+        self.primary_url = url or DatabaseConfig.URL
+        self.fallback_url = DatabaseConfig.DEFAULT_SQLITE_URL
+        self.schema = DatabaseConfig.SCHEMA if schema is None else schema
+        self.season_table = season_table or DatabaseConfig.SEASON_TABLE
+        self.schedule_table = schedule_table or DatabaseConfig.SCHEDULE_TABLE
+        self.boxscore_table = boxscore_table or DatabaseConfig.BOXSCORE_TABLE
+        self.url: str
+        self.engine: Engine
+        self._initialize_engine_with_fallback()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def save_seasons(self, df: pd.DataFrame, if_exists: str = "replace") -> int:
+        return self._write_dataframe(df, self.season_table, if_exists)
+
+    def save_schedules(self, df: pd.DataFrame, if_exists: str = "replace") -> int:
+        return self._write_dataframe(df, self.schedule_table, if_exists)
+
+    def save_boxscores(self, df: pd.DataFrame, if_exists: str = "replace") -> int:
+        return self._write_dataframe(df, self.boxscore_table, if_exists)
+
+    def row_count(self, table_name: str, schema: Optional[str] = None) -> int:
+        identifier = self._table_identifier(table_name, schema)
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(f"SELECT COUNT(*) FROM {identifier}"))
+                return int(result.scalar_one())
+        except SQLAlchemyError as exc:
+            logger.warning("Unable to count rows for %s (%s)", identifier, exc)
+            return 0
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _write_dataframe(self, df: pd.DataFrame, table_name: str, if_exists: str) -> int:
+        if df is None or df.empty:
+            logger.info("Skipping write for %s; no rows to persist", table_name)
+            return 0
+
+        target_schema = self.schema if self.schema else None
+        df.to_sql(
+            table_name,
+            self.engine,
+            schema=target_schema,
+            if_exists=if_exists,
+            index=False,
+            method="multi",
+        )
+        row_count = len(df)
+        logger.info(
+            "Persisted %d rows into %s",
+            row_count,
+            self._table_identifier(table_name, target_schema),
+        )
+        return row_count
+
+    def _ensure_schema(self) -> None:
+        if not self.schema:
+            return
+        if self.engine.dialect.name == "sqlite":  # SQLite does not support custom schemas
+            return
+        ident = self._quote_identifier(self.schema)
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {ident}"))
+                conn.commit()
+        except (ProgrammingError, SQLAlchemyError) as exc:
+            logger.warning("Could not ensure schema %s exists (%s)", self.schema, exc)
+            raise
+
+    def _initialize_engine_with_fallback(self) -> None:
+        attempts: list[tuple[str, Optional[str]]] = []
+        candidates = [(self.primary_url, self.schema)]
+        if not self.primary_url.startswith("sqlite"):
+            candidates.append((self.fallback_url, None))
+
+        last_exc: Optional[SQLAlchemyError] = None
+        for candidate_url, candidate_schema in candidates:
+            attempts.append((candidate_url, candidate_schema))
+            try:
+                engine = create_engine(candidate_url, future=True)
+                self.engine = engine
+                self.url = candidate_url
+                self.schema = candidate_schema
+                self._ensure_schema()
+                if candidate_url != self.primary_url:
+                    logger.warning(
+                        "Primary database unreachable; falling back to local SQLite at %s",
+                        candidate_url,
+                    )
+                return
+            except SQLAlchemyError as exc:
+                last_exc = exc
+                logger.warning(
+                    "Database connection failed for %s (%s)",
+                    candidate_url,
+                    exc,
+                )
+                continue
+
+        attempted = ", ".join(url for url, _ in attempts)
+        raise RuntimeError(
+            "Unable to initialize database connection after attempting: "
+            f"{attempted}. Set DATABASE_URL (and credentials) or allow the fallback to SQLite."
+        ) from last_exc
+
+    def _table_identifier(self, table_name: str, schema: Optional[str]) -> str:
+        quoted_table = self._quote_identifier(table_name)
+        schema_name = schema if schema is not None else self.schema
+        if schema_name:
+            return f"{self._quote_identifier(schema_name)}.{quoted_table}"
+        return quoted_table
+
+    @staticmethod
+    def _quote_identifier(identifier: str) -> str:
+        escaped = identifier.replace('"', '""')
+        return f'"{escaped}"'

@@ -6,3 +6,5 @@ html5lib
 jupyter
 python-dotenv
 pytest
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
