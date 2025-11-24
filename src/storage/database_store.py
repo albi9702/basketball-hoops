@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 import pandas as pd
@@ -10,14 +9,17 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 
+from src.configs.logging_config import get_logger
 from src.configs.settings import DatabaseConfig
 
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
+logger = get_logger(__name__)
 
 
 class DatabaseStore:
     """Write scraped DataFrames into relational tables with configurable names."""
+
+    # Default rows per INSERT batch to avoid hitting SQL statement limits
+    DEFAULT_CHUNK_SIZE: int = 1000
 
     def __init__(
         self,
@@ -26,6 +28,7 @@ class DatabaseStore:
         season_table: Optional[str] = None,
         schedule_table: Optional[str] = None,
         boxscore_table: Optional[str] = None,
+        chunk_size: Optional[int] = None,
     ) -> None:
         self.primary_url = url or DatabaseConfig.URL
         self.fallback_url = DatabaseConfig.DEFAULT_SQLITE_URL
@@ -33,6 +36,7 @@ class DatabaseStore:
         self.season_table = season_table or DatabaseConfig.SEASON_TABLE
         self.schedule_table = schedule_table or DatabaseConfig.SCHEDULE_TABLE
         self.boxscore_table = boxscore_table or DatabaseConfig.BOXSCORE_TABLE
+        self.chunk_size = chunk_size or self.DEFAULT_CHUNK_SIZE
         self.url: str
         self.engine: Engine
         self._initialize_engine_with_fallback()
@@ -63,26 +67,41 @@ class DatabaseStore:
     # Internal helpers
     # ------------------------------------------------------------------
     def _write_dataframe(self, df: pd.DataFrame, table_name: str, if_exists: str) -> int:
+        """Write DataFrame to database in chunks to avoid statement size limits."""
         if df is None or df.empty:
             logger.info("Skipping write for %s; no rows to persist", table_name)
             return 0
 
         target_schema = self.schema if self.schema else None
-        df.to_sql(
-            table_name,
-            self.engine,
-            schema=target_schema,
-            if_exists=if_exists,
-            index=False,
-            method="multi",
-        )
-        row_count = len(df)
+        total_rows = len(df)
+        written = 0
+
+        for start in range(0, total_rows, self.chunk_size):
+            chunk = df.iloc[start : start + self.chunk_size]
+            # First chunk: use caller's if_exists; subsequent: always append
+            mode = if_exists if start == 0 else "append"
+            chunk.to_sql(
+                table_name,
+                self.engine,
+                schema=target_schema,
+                if_exists=mode,
+                index=False,
+                method="multi",
+            )
+            written += len(chunk)
+            logger.debug(
+                "Wrote chunk of %d rows to %s (total so far: %d)",
+                len(chunk),
+                table_name,
+                written,
+            )
+
         logger.info(
             "Persisted %d rows into %s",
-            row_count,
+            written,
             self._table_identifier(table_name, target_schema),
         )
-        return row_count
+        return written
 
     def _ensure_schema(self) -> None:
         if not self.schema:

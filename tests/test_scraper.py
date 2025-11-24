@@ -1,12 +1,16 @@
 import datetime
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, Mock
 
 import pandas as pd
+import requests
 
 from src.scraping.basketball_reference_scraper import (
     BasketballReferenceScraper,
     scrape_data,
+    FetchError,
+    ParseError,
+    ScraperError,
 )
 
 
@@ -263,12 +267,118 @@ class TestBasketballReferenceScraper(unittest.TestCase):
 
         mock_store = MagicMock()
 
-        with patch.object(self.scraper, 'fetch_data', side_effect=Exception("boom")) as mocked_fetch:
+        # Use FetchError (a ScraperError subclass) instead of generic Exception
+        with patch.object(self.scraper, 'fetch_data', side_effect=FetchError("boom")) as mocked_fetch:
             result_df = self.scraper.scrape_boxscore_tables(schedule_df, store=mock_store)
 
         self.assertTrue(result_df.empty)
         mocked_fetch.assert_called_once()
         mock_store.save_boxscores.assert_not_called()
+
+
+class TestFetchWithRetry(unittest.TestCase):
+    """Tests for the retry logic in fetch_data."""
+
+    def setUp(self):
+        self.scraper = BasketballReferenceScraper(max_retries=3, request_delay=0)
+
+    @patch('time.sleep')
+    def test_fetch_data_success_on_first_try(self, mock_sleep):
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.text = "<html>Test</html>"
+        self.scraper.session.get = Mock(return_value=mock_response)
+
+        result = self.scraper.fetch_data("http://example.com")
+
+        self.assertEqual(result, "<html>Test</html>")
+        self.assertEqual(self.scraper.session.get.call_count, 1)
+
+    @patch('time.sleep')
+    def test_fetch_data_retries_on_server_error(self, mock_sleep):
+        error_response = Mock()
+        error_response.status_code = 500
+
+        success_response = Mock()
+        success_response.status_code = 200
+        success_response.text = "<html>Success</html>"
+
+        self.scraper.session.get = Mock(side_effect=[error_response, success_response])
+
+        result = self.scraper.fetch_data("http://example.com")
+
+        self.assertEqual(result, "<html>Success</html>")
+        self.assertEqual(self.scraper.session.get.call_count, 2)
+
+    @patch('time.sleep')
+    def test_fetch_data_raises_after_max_retries(self, mock_sleep):
+        error_response = Mock()
+        error_response.status_code = 503
+        self.scraper.session.get = Mock(return_value=error_response)
+
+        with self.assertRaises(FetchError) as ctx:
+            self.scraper.fetch_data("http://example.com")
+
+        self.assertIn("after 3 attempts", str(ctx.exception))
+        self.assertEqual(self.scraper.session.get.call_count, 3)
+
+    @patch('time.sleep')
+    def test_fetch_data_retries_on_connection_error(self, mock_sleep):
+        success_response = Mock()
+        success_response.status_code = 200
+        success_response.text = "<html>Test</html>"
+
+        self.scraper.session.get = Mock(side_effect=[
+            requests.RequestException("Connection failed"),
+            success_response,
+        ])
+
+        result = self.scraper.fetch_data("http://example.com")
+
+        self.assertEqual(result, "<html>Test</html>")
+        self.assertEqual(self.scraper.session.get.call_count, 2)
+
+    @patch('time.sleep')
+    def test_fetch_data_retries_on_rate_limit(self, mock_sleep):
+        rate_limited = Mock()
+        rate_limited.status_code = 429
+
+        success_response = Mock()
+        success_response.status_code = 200
+        success_response.text = "<html>OK</html>"
+
+        self.scraper.session.get = Mock(side_effect=[rate_limited, rate_limited, success_response])
+
+        result = self.scraper.fetch_data("http://example.com")
+
+        self.assertEqual(result, "<html>OK</html>")
+        self.assertEqual(self.scraper.session.get.call_count, 3)
+
+    @patch('time.sleep')
+    def test_fetch_data_raises_on_non_retryable_error(self, mock_sleep):
+        error_response = Mock()
+        error_response.status_code = 404  # Not in RETRY_STATUS_CODES
+        self.scraper.session.get = Mock(return_value=error_response)
+
+        with self.assertRaises(FetchError) as ctx:
+            self.scraper.fetch_data("http://example.com")
+
+        self.assertIn("HTTP 404", str(ctx.exception))
+        # Non-retryable errors should fail immediately
+        self.assertEqual(self.scraper.session.get.call_count, 1)
+
+
+class TestExceptions(unittest.TestCase):
+    """Tests for custom exception hierarchy."""
+
+    def test_fetch_error_is_scraper_error(self):
+        self.assertTrue(issubclass(FetchError, ScraperError))
+
+    def test_parse_error_is_scraper_error(self):
+        self.assertTrue(issubclass(ParseError, ScraperError))
+
+    def test_scraper_error_is_exception(self):
+        self.assertTrue(issubclass(ScraperError, Exception))
 
 
 if __name__ == '__main__':

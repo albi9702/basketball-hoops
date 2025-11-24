@@ -1,65 +1,132 @@
-import logging
+"""Basketball Reference scraper with retry logic and centralized logging."""
+
+from __future__ import annotations
+
 import re
 import time
 from datetime import date
 from io import StringIO
-from pathlib import Path
-from typing import Optional, Sequence, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Sequence, Type
 from urllib.parse import urljoin
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup, Comment, Tag
 
+from src.configs.logging_config import get_logger
+
 if TYPE_CHECKING:
-    from src.storage.database_store import DatabaseStore
+    from src.storage.base import StorageBackend
 
-LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE = LOG_DIR / "scraper.log"
+logger = get_logger(__name__)
 
-logger = logging.getLogger(__name__)
-if not logger.handlers:
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    file_handler = logging.FileHandler(LOG_FILE)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-    logger.propagate = False
+
+class ScraperError(Exception):
+    """Base exception for scraper errors."""
+
+
+class FetchError(ScraperError):
+    """Raised when fetching a URL fails after all retries."""
+
+
+class ParseError(ScraperError):
+    """Raised when parsing HTML fails."""
 
 class BasketballReferenceScraper:
     """Scrapes the international leagues table from Basketball Reference."""
 
     BASE_URL = "https://www.basketball-reference.com"
     INTERNATIONAL_PATH = "/international/years/"
-    REQUEST_DELAY_SECONDS = 2
 
-    def __init__(self, relative_path: Optional[str] = None, session: Optional[requests.Session] = None):
+    # Throttling and retry configuration
+    REQUEST_DELAY_SECONDS: float = 2.0
+    MAX_RETRIES: int = 3
+    RETRY_BACKOFF_FACTOR: float = 2.0
+    RETRY_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+    def __init__(
+        self,
+        relative_path: Optional[str] = None,
+        session: Optional[requests.Session] = None,
+        request_delay: Optional[float] = None,
+        max_retries: Optional[int] = None,
+    ) -> None:
         """
+        Initialize the scraper.
+
         Parameters
         ----------
-        relative_path: Optional[str]
+        relative_path : Optional[str]
             Override for the international endpoint, appended to the base URL.
-        session: Optional[requests.Session]
-            Reusable requests session for easier testing and connection pooling.
+        session : Optional[requests.Session]
+            Reusable requests session for connection pooling.
+        request_delay : Optional[float]
+            Seconds to wait between requests (default: 2.0).
+        max_retries : Optional[int]
+            Maximum retry attempts for transient failures (default: 3).
         """
-
         self.base_url = self.BASE_URL.rstrip("/")
         relative_path = relative_path or self.INTERNATIONAL_PATH
         self.target_path = relative_path.lstrip("/")
         self.league_url = urljoin(f"{self.base_url}/", self.target_path)
         self.session = session or requests.Session()
+        self.request_delay = (
+            request_delay if request_delay is not None else self.REQUEST_DELAY_SECONDS
+        )
+        self.max_retries = max_retries if max_retries is not None else self.MAX_RETRIES
 
     def fetch_data(self, url: Optional[str] = None) -> str:
+        """
+        Fetch HTML content from a URL with retry logic.
+
+        Raises
+        ------
+        FetchError
+            If the request fails after all retries.
+        """
         target_url = url or self.league_url
-        logger.info("Fetching URL: %s", target_url)
-        time.sleep(self.REQUEST_DELAY_SECONDS)
-        response = self.session.get(target_url)
-        if response.status_code == 200:
-            logger.info("Fetched URL successfully: %s", target_url)
-            return response.text
-        logger.error("Failed to fetch URL %s (status %s)", target_url, response.status_code)
-        raise Exception(f"Failed to fetch data: {response.status_code}")
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(1, self.max_retries + 1):
+            time.sleep(self.request_delay)
+            try:
+                response = self.session.get(target_url, timeout=30)
+                if response.status_code == 200:
+                    logger.debug("Fetched %s on attempt %d", target_url, attempt)
+                    return response.text
+
+                if response.status_code in self.RETRY_STATUS_CODES:
+                    wait = self.request_delay * (self.RETRY_BACKOFF_FACTOR ** (attempt - 1))
+                    logger.warning(
+                        "Received %d from %s; retrying in %.1fs (attempt %d/%d)",
+                        response.status_code,
+                        target_url,
+                        wait,
+                        attempt,
+                        self.max_retries,
+                    )
+                    time.sleep(wait)
+                    continue
+
+                # Non-retryable HTTP error
+                raise FetchError(f"HTTP {response.status_code} for {target_url}")
+
+            except requests.RequestException as exc:
+                last_exc = exc
+                wait = self.request_delay * (self.RETRY_BACKOFF_FACTOR ** (attempt - 1))
+                logger.warning(
+                    "Request failed for %s: %s; retrying in %.1fs (attempt %d/%d)",
+                    target_url,
+                    exc,
+                    wait,
+                    attempt,
+                    self.max_retries,
+                )
+                time.sleep(wait)
+
+        raise FetchError(
+            f"Failed to fetch {target_url} after {self.max_retries} attempts"
+        ) from last_exc
 
     @staticmethod
     def _extract_href(value: object) -> Optional[str]:
@@ -90,11 +157,10 @@ class BasketballReferenceScraper:
     @staticmethod
     def _get_column(df: pd.DataFrame, candidates: Sequence[str], field_name: str) -> pd.Series:
         """Return the first matching column Series given a list of candidate names."""
-
         for candidate in candidates:
             if candidate in df.columns:
                 return df[candidate]
-        raise Exception(f"Expected column '{field_name}' not found. Tried: {', '.join(candidates)}")
+        raise ParseError(f"Expected column '{field_name}' not found. Tried: {', '.join(candidates)}")
 
     @staticmethod
     def _season_year_from_url(season_url: Optional[str]) -> Optional[str]:
@@ -120,13 +186,13 @@ class BasketballReferenceScraper:
         BasketballReferenceScraper._unwrap_commented_tables(soup)
         table = soup.find('table')
         if not table:
-            raise Exception("No table found on the page.")
+            raise ParseError("No table found on the page.")
 
         table_html = str(table)
         data_df = pd.read_html(StringIO(table_html))[0]
-        link_df = None
+        link_df: Optional[pd.DataFrame] = None
         try:
-            link_df = pd.read_html(StringIO(table_html), extract_links='body')[0]
+            link_df = pd.read_html(StringIO(table_html), extract_links="body")[0]
         except (TypeError, ValueError):
             pass
 
@@ -242,7 +308,7 @@ class BasketballReferenceScraper:
             try:
                 date_link_series = self._get_column(schedule_link_df, ['Date'], 'Date URL')
                 date_urls = date_link_series.map(self._extract_href)
-            except Exception:
+            except ParseError:
                 date_urls = pd.Series([None] * len(schedule_df))
         else:
             date_urls = pd.Series([None] * len(schedule_df))
@@ -298,8 +364,16 @@ class BasketballReferenceScraper:
             schedule_url = row.get('Schedule URL')
             if not schedule_url:
                 continue
-            schedule_df = self.scrape_league_schedule(row['Season'], row['League'], schedule_url)
-            schedules.append(schedule_df)
+            try:
+                schedule_df = self.scrape_league_schedule(row['Season'], row['League'], schedule_url)
+                schedules.append(schedule_df)
+            except ScraperError as exc:
+                logger.error(
+                    "Failed to scrape schedule for %s %s: %s",
+                    row['League'],
+                    row['Season'],
+                    exc,
+                )
 
         if schedules:
             combined = pd.concat(schedules, ignore_index=True)
@@ -314,7 +388,7 @@ class BasketballReferenceScraper:
     def scrape_boxscore_tables(
         self,
         schedule_df: pd.DataFrame,
-        store: Optional["DatabaseStore"] = None,
+        store: Optional["StorageBackend"] = None,
     ) -> pd.DataFrame:
         if schedule_df.empty:
             logger.info("No schedule rows provided; skipping boxscore scrape")
@@ -345,7 +419,7 @@ class BasketballReferenceScraper:
                 try:
                     html = self.fetch_data(date_url)
                     html_cache[date_url] = self._parse_boxscore_tables(html)
-                except Exception as exc:  # noqa: BLE001 we want to skip only this game
+                except ScraperError as exc:
                     logger.error(
                         "Failed to fetch boxscore %s for %s vs %s (%s %s): %s",
                         date_url,
