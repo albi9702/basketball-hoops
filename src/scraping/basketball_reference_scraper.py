@@ -51,10 +51,20 @@ class BasketballReferenceScraper:
     INTERNATIONAL_PATH = "/international/years/"
 
     # Throttling and retry configuration
-    REQUEST_DELAY_SECONDS: float = 2.0
+    REQUEST_DELAY_SECONDS: float = 3.0
     MAX_RETRIES: int = 3
     RETRY_BACKOFF_FACTOR: float = 2.0
-    RETRY_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+    RETRY_STATUS_CODES: frozenset[int] = frozenset({403, 429, 500, 502, 503, 504})
+
+    # Default headers to mimic a browser request
+    DEFAULT_HEADERS: dict[str, str] = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
 
     def __init__(
         self,
@@ -82,6 +92,7 @@ class BasketballReferenceScraper:
         self.target_path = relative_path.lstrip("/")
         self.league_url = urljoin(f"{self.base_url}/", self.target_path)
         self.session = session or requests.Session()
+        self.session.headers.update(self.DEFAULT_HEADERS)
         self.request_delay = (
             request_delay if request_delay is not None else self.REQUEST_DELAY_SECONDS
         )
