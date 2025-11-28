@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import re
 import time
 from datetime import date
@@ -111,7 +112,9 @@ class BasketballReferenceScraper:
         last_exc: Optional[Exception] = None
 
         for attempt in range(1, self.max_retries + 1):
-            time.sleep(self.request_delay)
+            # Add randomized delay to appear more human-like
+            jitter = random.uniform(0.5, 2.0)
+            time.sleep(self.request_delay + jitter)
             try:
                 response = self.session.get(target_url, timeout=30)
                 if response.status_code == 200:
