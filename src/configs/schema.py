@@ -276,72 +276,120 @@ def validate_boxscores_df(df: pd.DataFrame) -> list[str]:
 
 
 # =============================================================================
+# Raw HTML Column Names (as they appear in scraped HTML tables)
+# =============================================================================
+
+class RawSeasonColumns:
+    """Raw column names as they appear in the HTML season tables."""
+    SEASON = "Season"
+    SEASON_URL = "Season URL"
+    LEAGUE = "League"
+    LEAGUES = "Leagues"  # Alternative column name in some tables
+    LEAGUE_URL = "League URL"
+
+
+class RawScheduleColumns:
+    """Raw column names as they appear in the HTML schedule tables."""
+    DATE = "Date"
+    TEAM = "Team"
+    PTS = "PTS"
+    OPP = "Opp"
+    PTS_1 = "PTS.1"
+    OT = "OT"
+    NOTES = "Notes"
+    DATE_URL = "Date URL"
+    # Intermediate columns (added during processing before final rename)
+    HOME = "Home"
+    HOME_POINTS = "HomePoints"
+    VISITORS = "Visitors"
+    VISITORS_POINTS = "VisitorsPoints"
+    LEAGUE = "League"
+    SCHEDULE_URL = "Schedule URL"
+
+
+class RawBoxscoreColumns:
+    """Raw column names as they appear in the HTML boxscore tables."""
+    PLAYER = "Player"
+    MP = "MP"
+    FG = "FG"
+    FGA = "FGA"
+    FG_PCT = "FG%"
+    THREE_P = "3P"
+    THREE_PA = "3PA"
+    THREE_P_PCT = "3P%"
+    FT = "FT"
+    FTA = "FTA"
+    FT_PCT = "FT%"
+    ORB = "ORB"
+    DRB = "DRB"
+    TRB = "TRB"
+    AST = "AST"
+    STL = "STL"
+    BLK = "BLK"
+    TOV = "TOV"
+    PF = "PF"
+    PTS = "PTS"
+
+
+# =============================================================================
 # Column Name Mappings (for renaming raw scraped data)
 # =============================================================================
 
-# Season column rename map (raw → standardized)
-SEASON_COLUMN_RENAME_MAP: dict[str, str] = {
-    "Season URL": "SeasonURL",
-    "League URL": "LeagueURL",
-    "Schedule URL": "ScheduleURL",
-}
-
 # Mapping from raw scraped column names to standardized schema names (first pass - from HTML)
 SCHEDULE_RAW_RENAME_MAP: dict[str, str] = {
-    "Team": "Home",
-    "PTS": "HomePoints",
-    "Opp": "Visitors",
-    "PTS.1": "VisitorsPoints",
-    "OT": "HasGoneOvertime",
-    "Date URL": "DateURL",
+    RawScheduleColumns.TEAM: RawScheduleColumns.HOME,
+    RawScheduleColumns.PTS: RawScheduleColumns.HOME_POINTS,
+    RawScheduleColumns.OPP: RawScheduleColumns.VISITORS,
+    RawScheduleColumns.PTS_1: RawScheduleColumns.VISITORS_POINTS,
+    RawScheduleColumns.OT: ScheduleColumns.HAS_GONE_OVERTIME.name,
+    RawScheduleColumns.DATE_URL: ScheduleColumns.DATE_URL.name,
 }
 
 # Second pass - rename to final standardized names
 SCHEDULE_COLUMN_RENAME_MAP: dict[str, str] = {
-    "Date": "GameDate",
-    "Home": "TeamNameHome",
-    "HomePoints": "TeamHomePoints",
-    "Visitors": "TeamNameVisitors",
-    "VisitorsPoints": "TeamVisitorsPoints",
-    "League": "LeagueName",
-    "Schedule URL": "ScheduleURL",
+    RawScheduleColumns.DATE: ScheduleColumns.GAME_DATE.name,
+    RawScheduleColumns.HOME: ScheduleColumns.TEAM_NAME_HOME.name,
+    RawScheduleColumns.HOME_POINTS: ScheduleColumns.TEAM_HOME_POINTS.name,
+    RawScheduleColumns.VISITORS: ScheduleColumns.TEAM_NAME_VISITORS.name,
+    RawScheduleColumns.VISITORS_POINTS: ScheduleColumns.TEAM_VISITORS_POINTS.name,
+    RawScheduleColumns.LEAGUE: ScheduleColumns.LEAGUE_NAME.name,
+    RawScheduleColumns.SCHEDULE_URL: ScheduleColumns.SCHEDULE_URL.name,
 }
 
 # Core columns expected in raw schedule data before renaming
 SCHEDULE_RAW_COLUMNS: list[str] = [
-    "Date", "Team", "PTS", "Opp", "PTS.1", "OT", "Notes", "Date URL"
+    RawScheduleColumns.DATE,
+    RawScheduleColumns.TEAM,
+    RawScheduleColumns.PTS,
+    RawScheduleColumns.OPP,
+    RawScheduleColumns.PTS_1,
+    RawScheduleColumns.OT,
+    RawScheduleColumns.NOTES,
+    RawScheduleColumns.DATE_URL,
 ]
 
 # Mapping from raw boxscore column names to standardized schema names
 BOXSCORE_COLUMN_RENAME_MAP: dict[str, str] = {
-    "Player": "PlayerName",
-    "MP": "MinutesPlayed",
-    "FG": "FieldGoalsMade",
-    "FGA": "FieldGoalsAttempted",
-    "FG%": "FieldGoalPercentage",
-    "3P": "ThreePointMade",
-    "3PA": "ThreePointAttempted",
-    "3P%": "ThreePointPercentage",
-    "FT": "FreeThrowsMade",
-    "FTA": "FreeThrowsAttempted",
-    "FT%": "FreeThrowPercentage",
-    "ORB": "OffensiveRebounds",
-    "DRB": "DefensiveRebounds",
-    "TRB": "TotalRebounds",
-    "AST": "Assists",
-    "STL": "Steals",
-    "BLK": "Blocks",
-    "TOV": "Turnovers",
-    "PF": "PersonalFouls",
-    "PTS": "Points",
-    "Schedule URL": "ScheduleURL",
-    "League": "LeagueName",
+    RawBoxscoreColumns.PLAYER: BoxscoreColumns.PLAYER_NAME.name,
+    RawBoxscoreColumns.MP: BoxscoreColumns.MINUTES_PLAYED.name,
+    RawBoxscoreColumns.FG: BoxscoreColumns.FIELD_GOALS_MADE.name,
+    RawBoxscoreColumns.FGA: BoxscoreColumns.FIELD_GOALS_ATTEMPTED.name,
+    RawBoxscoreColumns.FG_PCT: BoxscoreColumns.FIELD_GOAL_PERCENTAGE.name,
+    RawBoxscoreColumns.THREE_P: BoxscoreColumns.THREE_POINT_MADE.name,
+    RawBoxscoreColumns.THREE_PA: BoxscoreColumns.THREE_POINT_ATTEMPTED.name,
+    RawBoxscoreColumns.THREE_P_PCT: BoxscoreColumns.THREE_POINT_PERCENTAGE.name,
+    RawBoxscoreColumns.FT: BoxscoreColumns.FREE_THROWS_MADE.name,
+    RawBoxscoreColumns.FTA: BoxscoreColumns.FREE_THROWS_ATTEMPTED.name,
+    RawBoxscoreColumns.FT_PCT: BoxscoreColumns.FREE_THROW_PERCENTAGE.name,
+    RawBoxscoreColumns.ORB: BoxscoreColumns.OFFENSIVE_REBOUNDS.name,
+    RawBoxscoreColumns.DRB: BoxscoreColumns.DEFENSIVE_REBOUNDS.name,
+    RawBoxscoreColumns.TRB: BoxscoreColumns.TOTAL_REBOUNDS.name,
+    RawBoxscoreColumns.AST: BoxscoreColumns.ASSISTS.name,
+    RawBoxscoreColumns.STL: BoxscoreColumns.STEALS.name,
+    RawBoxscoreColumns.BLK: BoxscoreColumns.BLOCKS.name,
+    RawBoxscoreColumns.TOV: BoxscoreColumns.TURNOVERS.name,
+    RawBoxscoreColumns.PF: BoxscoreColumns.PERSONAL_FOULS.name,
+    RawBoxscoreColumns.PTS: BoxscoreColumns.POINTS.name,
+    RawScheduleColumns.SCHEDULE_URL: BoxscoreColumns.SCHEDULE_URL.name,
+    RawScheduleColumns.LEAGUE: BoxscoreColumns.LEAGUE.name,
 }
-
-# Raw boxscore columns expected from scraping (before renaming)
-BOXSCORE_RAW_COLUMNS: list[str] = [
-    "Player", "MP", "FG", "FGA", "FG%", "3P", "3PA", "3P%",
-    "FT", "FTA", "FT%", "ORB", "DRB", "TRB", "AST", "STL",
-    "BLK", "TOV", "PF", "PTS", "TeamRole", "Team", "Date",
-    "Season", "League", "Schedule URL", "DateURL"
-]

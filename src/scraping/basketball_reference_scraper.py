@@ -18,7 +18,8 @@ from src.configs.schema import (
     ScheduleColumns,
     SeasonColumns,
     BoxscoreColumns,
-    SEASON_COLUMN_RENAME_MAP,
+    RawSeasonColumns,
+    RawScheduleColumns,
     SCHEDULE_RAW_RENAME_MAP,
     SCHEDULE_COLUMN_RENAME_MAP,
     SCHEDULE_RAW_COLUMNS,
@@ -271,12 +272,12 @@ class BasketballReferenceScraper:
         if link_table_df is not None:
             link_table_df = self._second_level_columns(link_table_df)
 
-        season_series = self._get_column(full_table_df, ['Season'], 'Season')
-        league_series = self._get_column(full_table_df, ['League', 'Leagues'], 'League')
+        season_series = self._get_column(full_table_df, [RawSeasonColumns.SEASON], RawSeasonColumns.SEASON)
+        league_series = self._get_column(full_table_df, [RawSeasonColumns.LEAGUE, RawSeasonColumns.LEAGUES], RawSeasonColumns.LEAGUE)
 
         if link_table_df is not None:
-            season_url_series = self._get_column(link_table_df, ['Season'], 'Season URL')
-            league_url_series = self._get_column(link_table_df, ['League', 'Leagues'], 'League URL')
+            season_url_series = self._get_column(link_table_df, [RawSeasonColumns.SEASON], RawSeasonColumns.SEASON_URL)
+            league_url_series = self._get_column(link_table_df, [RawSeasonColumns.LEAGUE, RawSeasonColumns.LEAGUES], RawSeasonColumns.LEAGUE_URL)
             season_urls = season_url_series.map(self._extract_href)
             league_urls = league_url_series.map(self._extract_href)
         else:
@@ -284,22 +285,19 @@ class BasketballReferenceScraper:
             league_urls = pd.Series([None] * len(league_series), index=league_series.index)
 
         df = pd.DataFrame({
-            'Season': season_series,
-            'Season URL': season_urls.map(lambda href: urljoin(self.base_url, href) if href else None),
-            'League': league_series,
-            'League URL': league_urls.map(lambda href: urljoin(self.base_url, href) if href else None)
+            SeasonColumns.SEASON.name: season_series,
+            SeasonColumns.SEASON_URL.name: season_urls.map(lambda href: urljoin(self.base_url, href) if href else None),
+            SeasonColumns.LEAGUE.name: league_series,
+            SeasonColumns.LEAGUE_URL.name: league_urls.map(lambda href: urljoin(self.base_url, href) if href else None)
         })
 
         df = df.replace(r'^\s*$', pd.NA, regex=True)
-        df = df.dropna(subset=['Season', 'League']).reset_index(drop=True)
-        df['Season'] = df['Season'].astype(str)
-        df['League'] = df['League'].astype(str)
-        df['Schedule URL'] = df.apply(
-            lambda row: self._build_schedule_url(row['Season URL'], row['League URL']), axis=1
+        df = df.dropna(subset=[SeasonColumns.SEASON.name, SeasonColumns.LEAGUE.name]).reset_index(drop=True)
+        df[SeasonColumns.SEASON.name] = df[SeasonColumns.SEASON.name].astype(str)
+        df[SeasonColumns.LEAGUE.name] = df[SeasonColumns.LEAGUE.name].astype(str)
+        df[SeasonColumns.SCHEDULE_URL.name] = df.apply(
+            lambda row: self._build_schedule_url(row[SeasonColumns.SEASON_URL.name], row[SeasonColumns.LEAGUE_URL.name]), axis=1
         )
-
-        # Rename to standardized column names
-        df = df.rename(columns=SEASON_COLUMN_RENAME_MAP)
 
         logger.info("Parsed %d season rows with schedule URLs", len(df))
         return df
@@ -320,30 +318,32 @@ class BasketballReferenceScraper:
 
         if schedule_link_df is not None:
             try:
-                date_link_series = self._get_column(schedule_link_df, ['Date'], 'Date URL')
+                date_link_series = self._get_column(schedule_link_df, [RawScheduleColumns.DATE], RawScheduleColumns.DATE_URL)
                 date_urls = date_link_series.map(self._extract_href)
             except ParseError:
                 date_urls = pd.Series([None] * len(schedule_df))
         else:
             date_urls = pd.Series([None] * len(schedule_df))
 
-        parsed_dates = schedule_df['Date'].map(self._parse_game_date)
+        # RawScheduleColumns.DATE is the raw HTML column name before renaming
+        parsed_dates = schedule_df[RawScheduleColumns.DATE].map(self._parse_game_date)
         valid_mask = parsed_dates.notna()
         schedule_df = schedule_df.loc[valid_mask].reset_index(drop=True)
         parsed_dates = parsed_dates.loc[valid_mask].reset_index(drop=True)
         date_urls = date_urls.loc[valid_mask].reset_index(drop=True)
 
-        schedule_df['Date'] = parsed_dates.dt.date
-        schedule_df['Date URL'] = date_urls.map(lambda href: urljoin(self.base_url, href) if href else None)
-        schedule_df['Season'] = season
-        schedule_df['League'] = league
-        schedule_df['Schedule URL'] = schedule_url
+        # Add columns using raw names (will be renamed later)
+        schedule_df[RawScheduleColumns.DATE] = parsed_dates.dt.date
+        schedule_df[RawScheduleColumns.DATE_URL] = date_urls.map(lambda href: urljoin(self.base_url, href) if href else None)
+        schedule_df[ScheduleColumns.SEASON.name] = season
+        schedule_df[RawScheduleColumns.LEAGUE] = league  # Will be renamed to LeagueName
+        schedule_df[RawScheduleColumns.SCHEDULE_URL] = schedule_url  # Will be renamed to ScheduleURL
 
         for column in SCHEDULE_RAW_COLUMNS:
             if column not in schedule_df.columns:
                 schedule_df[column] = None
 
-        ordered_columns = SCHEDULE_RAW_COLUMNS + ['Season', 'League', 'Schedule URL']
+        ordered_columns = SCHEDULE_RAW_COLUMNS + [ScheduleColumns.SEASON.name, RawScheduleColumns.LEAGUE, RawScheduleColumns.SCHEDULE_URL]
         schedule_df = schedule_df[ordered_columns]
         # First pass: rename raw HTML column names to intermediate names
         schedule_df = schedule_df.rename(columns=SCHEDULE_RAW_RENAME_MAP)

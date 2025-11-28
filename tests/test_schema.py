@@ -12,7 +12,6 @@ from src.configs.schema import (
     SEASONS_SCHEMA,
     SCHEDULES_SCHEMA,
     BOXSCORES_SCHEMA,
-    SEASON_COLUMN_RENAME_MAP,
     SCHEDULE_RAW_RENAME_MAP,
     SCHEDULE_COLUMN_RENAME_MAP,
     SCHEDULE_RAW_COLUMNS,
@@ -162,15 +161,6 @@ class TestHelperFunctions:
 
 class TestColumnMappings:
     """Tests for column rename mappings."""
-
-    def test_season_column_rename_map_keys(self):
-        expected_keys = {"Season URL", "League URL", "Schedule URL"}
-        assert set(SEASON_COLUMN_RENAME_MAP.keys()) == expected_keys
-
-    def test_season_column_rename_map_values(self):
-        assert SEASON_COLUMN_RENAME_MAP["Season URL"] == "SeasonURL"
-        assert SEASON_COLUMN_RENAME_MAP["League URL"] == "LeagueURL"
-        assert SEASON_COLUMN_RENAME_MAP["Schedule URL"] == "ScheduleURL"
 
     def test_schedule_raw_rename_map_keys(self):
         # First-pass mapping: raw scraped → intermediate
