@@ -26,6 +26,7 @@ jobs:
 
       - name: Run full scraper
         env:
+          PYTHONPATH: ${{ github.workspace }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_SCHEMA: ${{ secrets.DATABASE_SCHEMA }}
           DATABASE_SCHEDULE_TABLE: ${{ secrets.DATABASE_SCHEDULE_TABLE }}
