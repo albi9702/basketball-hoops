@@ -1,9 +1,9 @@
 name: Weekly Full Basketball Scrape
 
 on:
-  schedule:
-    # Run every Sunday at 2:00 AM UTC
-    - cron: '0 2 * * 0'
+  # Schedule disabled - Basketball Reference blocks GitHub Actions IPs
+  # schedule:
+  #   - cron: '0 2 * * 0'
   workflow_dispatch:
 
 jobs:

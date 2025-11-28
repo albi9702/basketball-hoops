@@ -1,9 +1,9 @@
 name: Daily Basketball Scrape
 
 on:
-  schedule:
-    # Run daily at 6:00 AM UTC
-    - cron: '0 6 * * *'
+  # Schedule disabled - Basketball Reference blocks GitHub Actions IPs
+  # schedule:
+  #   - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       target_date:
