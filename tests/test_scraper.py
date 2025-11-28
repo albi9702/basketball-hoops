@@ -12,6 +12,11 @@ from src.scraping.basketball_reference_scraper import (
     ParseError,
     ScraperError,
 )
+from src.configs.schema import (
+    SeasonColumns,
+    ScheduleColumns,
+    BoxscoreColumns,
+)
 
 
 SAMPLE_TABLE_HTML = """
@@ -128,20 +133,20 @@ class TestBasketballReferenceScraper(unittest.TestCase):
         self.assertIsInstance(df, pd.DataFrame)
         self.assertListEqual(
             list(df.columns),
-            ['Season', 'Season URL', 'League', 'League URL', 'Schedule URL']
+            ['Season', 'SeasonURL', 'League', 'LeagueURL', 'ScheduleURL']
         )
         self.assertEqual(len(df), 2, "Rows missing League should be dropped")
         self.assertEqual(df.iloc[0]['Season'], '2024-25')
         self.assertEqual(
-            df.iloc[0]['Schedule URL'],
+            df.iloc[0]['ScheduleURL'],
             'https://www.basketball-reference.com/international/league-a/2024-schedule.html'
         )
         self.assertEqual(
-            df.iloc[1]['Schedule URL'],
+            df.iloc[1]['ScheduleURL'],
             'https://www.basketball-reference.com/international/league-b/2023-schedule.html'
         )
         self.assertEqual(
-            df.iloc[0]['League URL'],
+            df.iloc[0]['LeagueURL'],
             'https://www.basketball-reference.com/international/league-a/'
         )
 
@@ -161,29 +166,29 @@ class TestBasketballReferenceScraper(unittest.TestCase):
             schedules_df = self.scraper.scrape_league_schedules(df)
 
         expected_columns = [
-            'Date', 'Home', 'HomePoints', 'Visitors', 'VisitorsPoints',
-            'HasGoneOvertime', 'Notes', 'DateURL', 'Season', 'League', 'Schedule URL'
+            'GameDate', 'TeamNameHome', 'TeamHomePoints', 'TeamNameVisitors', 'TeamVisitorsPoints',
+            'HasGoneOvertime', 'Notes', 'DateURL', 'Season', 'LeagueName', 'ScheduleURL'
         ]
         self.assertListEqual(list(schedules_df.columns), expected_columns)
         self.assertEqual(len(schedules_df), len(df))
-        self.assertTrue(schedules_df['Schedule URL'].str.endswith('-schedule.html').all())
+        self.assertTrue(schedules_df['ScheduleURL'].str.endswith('-schedule.html').all())
         self.assertTrue(schedules_df['DateURL'].str.contains('boxscores').all())
-        self.assertTrue(all(isinstance(d, datetime.date) for d in schedules_df['Date']))
+        self.assertTrue(all(isinstance(d, datetime.date) for d in schedules_df['GameDate']))
         self.assertGreaterEqual(mocked_fetch.call_count, len(df))
 
     def test_scrape_boxscore_tables(self):
         schedule_df = pd.DataFrame({
-            'Date': [datetime.date(2025, 10, 3)],
-            'Home': ['Team A'],
-            'HomePoints': [85],
-            'Visitors': ['Team B'],
-            'VisitorsPoints': [80],
+            'GameDate': [datetime.date(2025, 10, 3)],
+            'TeamNameHome': ['Team A'],
+            'TeamHomePoints': [85],
+            'TeamNameVisitors': ['Team B'],
+            'TeamVisitorsPoints': [80],
             'HasGoneOvertime': [''],
             'Notes': ['Opening night'],
             'DateURL': ['https://www.basketball-reference.com/boxscores/202410030AAA.html'],
             'Season': ['2024-25'],
-            'League': ['EuroLeague'],
-            'Schedule URL': ['https://www.basketball-reference.com/international/league-a/2024-schedule.html']
+            'LeagueName': ['EuroLeague'],
+            'ScheduleURL': ['https://www.basketball-reference.com/international/league-a/2024-schedule.html']
         })
 
         with patch.object(self.scraper, 'fetch_data', return_value=SAMPLE_BOXSCORE_HTML) as mocked_fetch:
@@ -192,22 +197,22 @@ class TestBasketballReferenceScraper(unittest.TestCase):
         self.assertEqual(len(boxscore_df), 2)
         self.assertSetEqual(set(boxscore_df['TeamRole']), {'Home', 'Visitors'})
         self.assertSetEqual(set(boxscore_df['Team']), {'Team A', 'Team B'})
-        self.assertIn('Player', boxscore_df.columns)
+        self.assertIn('PlayerName', boxscore_df.columns)
         visitors_row = boxscore_df.loc[boxscore_df['TeamRole'] == 'Visitors'].iloc[0]
         home_row = boxscore_df.loc[boxscore_df['TeamRole'] == 'Home'].iloc[0]
         self.assertEqual(visitors_row['Team'], 'Team B')
         self.assertEqual(home_row['Team'], 'Team A')
-        self.assertEqual(visitors_row['PTS'], 18)
-        self.assertEqual(home_row['PTS'], 20)
+        self.assertEqual(visitors_row['Points'], 18)
+        self.assertEqual(home_row['Points'], 20)
         mocked_fetch.assert_called_once_with('https://www.basketball-reference.com/boxscores/202410030AAA.html')
 
     def test_scrape_boxscore_tables_streams_to_store(self):
         schedule_df = pd.DataFrame({
-            'Date': [datetime.date(2025, 10, 3), datetime.date(2025, 10, 4)],
-            'Home': ['Team A', 'Team C'],
-            'HomePoints': [85, 90],
-            'Visitors': ['Team B', 'Team D'],
-            'VisitorsPoints': [80, 88],
+            'GameDate': [datetime.date(2025, 10, 3), datetime.date(2025, 10, 4)],
+            'TeamNameHome': ['Team A', 'Team C'],
+            'TeamHomePoints': [85, 90],
+            'TeamNameVisitors': ['Team B', 'Team D'],
+            'TeamVisitorsPoints': [80, 88],
             'HasGoneOvertime': ['', 'OT'],
             'Notes': ['Opening night', ''],
             'DateURL': [
@@ -215,8 +220,8 @@ class TestBasketballReferenceScraper(unittest.TestCase):
                 'https://www.basketball-reference.com/boxscores/202410040BBB.html',
             ],
             'Season': ['2024-25', '2024-25'],
-            'League': ['EuroLeague', 'EuroLeague'],
-            'Schedule URL': [
+            'LeagueName': ['EuroLeague', 'EuroLeague'],
+            'ScheduleURL': [
                 'https://www.basketball-reference.com/international/league-a/2024-schedule.html',
                 'https://www.basketball-reference.com/international/league-a/2024-schedule.html',
             ],
@@ -237,9 +242,9 @@ class TestBasketballReferenceScraper(unittest.TestCase):
 
     def test_filter_schedule_by_date(self):
         schedule_df = pd.DataFrame({
-            'Date': [datetime.date(2025, 10, 3), datetime.date(2025, 10, 4)],
-            'Home': ['Team A', 'Team C'],
-            'League': ['EuroLeague', 'EuroLeague'],
+            'GameDate': [datetime.date(2025, 10, 3), datetime.date(2025, 10, 4)],
+            'TeamNameHome': ['Team A', 'Team C'],
+            'LeagueName': ['EuroLeague', 'EuroLeague'],
         })
 
         filtered = self.scraper.filter_schedule_by_date(
@@ -248,21 +253,21 @@ class TestBasketballReferenceScraper(unittest.TestCase):
         )
 
         self.assertEqual(len(filtered), 1)
-        self.assertEqual(filtered.iloc[0]['Home'], 'Team C')
+        self.assertEqual(filtered.iloc[0]['TeamNameHome'], 'Team C')
 
     def test_scrape_boxscore_tables_skips_failed_fetch(self):
         schedule_df = pd.DataFrame({
-            'Date': [datetime.date(2025, 10, 3)],
-            'Home': ['Team A'],
-            'HomePoints': [85],
-            'Visitors': ['Team B'],
-            'VisitorsPoints': [80],
+            'GameDate': [datetime.date(2025, 10, 3)],
+            'TeamNameHome': ['Team A'],
+            'TeamHomePoints': [85],
+            'TeamNameVisitors': ['Team B'],
+            'TeamVisitorsPoints': [80],
             'HasGoneOvertime': [''],
             'Notes': ['Opening night'],
             'DateURL': ['https://www.basketball-reference.com/boxscores/202410030AAA.html'],
             'Season': ['2024-25'],
-            'League': ['EuroLeague'],
-            'Schedule URL': ['https://www.basketball-reference.com/international/league-a/2024-schedule.html']
+            'LeagueName': ['EuroLeague'],
+            'ScheduleURL': ['https://www.basketball-reference.com/international/league-a/2024-schedule.html']
         })
 
         mock_store = MagicMock()

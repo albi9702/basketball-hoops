@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from src.configs.logging_config import configure_logging, get_logger
+from src.configs.schema import ScheduleColumns
 from src.scraping.basketball_reference_scraper import BasketballReferenceScraper
 from src.storage.database_store import DatabaseStore
 
@@ -66,10 +67,10 @@ def main(mode: str = "full", target_date: Optional[date] = None) -> None:
         logger.warning("Database persistence disabled: %s", exc)
         store = None
 
-    seasons_df = scraper.scrape().head(10)
+    seasons_df = scraper.scrape().head(1)
     logger.info("Scraped %d season rows", len(seasons_df))
 
-    schedules_df = scraper.scrape_league_schedules(seasons_df)
+    schedules_df = scraper.scrape_league_schedules(seasons_df).head(10)
     if target_date:
         before = len(schedules_df)
         schedules_df = scraper.filter_schedule_by_date(schedules_df, target_date)
@@ -81,7 +82,7 @@ def main(mode: str = "full", target_date: Optional[date] = None) -> None:
         )
 
     if not schedules_df.empty:
-        league_count = schedules_df['League'].nunique()
+        league_count = schedules_df[ScheduleColumns.LEAGUE_NAME.name].nunique()
         logger.info(
             "Scraped %d schedule rows across %d leagues",
             len(schedules_df),

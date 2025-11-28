@@ -14,6 +14,17 @@ import requests
 from bs4 import BeautifulSoup, Comment, Tag
 
 from src.configs.logging_config import get_logger
+from src.configs.schema import (
+    ScheduleColumns,
+    SeasonColumns,
+    BoxscoreColumns,
+    SEASON_COLUMN_RENAME_MAP,
+    SCHEDULE_RAW_RENAME_MAP,
+    SCHEDULE_COLUMN_RENAME_MAP,
+    SCHEDULE_RAW_COLUMNS,
+    BOXSCORE_COLUMN_RENAME_MAP,
+    create_empty_schedules_df,
+)
 
 if TYPE_CHECKING:
     from src.storage.base import StorageBackend
@@ -287,6 +298,9 @@ class BasketballReferenceScraper:
             lambda row: self._build_schedule_url(row['Season URL'], row['League URL']), axis=1
         )
 
+        # Rename to standardized column names
+        df = df.rename(columns=SEASON_COLUMN_RENAME_MAP)
+
         logger.info("Parsed %d season rows with schedule URLs", len(df))
         return df
 
@@ -325,23 +339,16 @@ class BasketballReferenceScraper:
         schedule_df['League'] = league
         schedule_df['Schedule URL'] = schedule_url
 
-        core_columns = ['Date', 'Team', 'PTS', 'Opp', 'PTS.1', 'OT', 'Notes', 'Date URL']
-        for column in core_columns:
+        for column in SCHEDULE_RAW_COLUMNS:
             if column not in schedule_df.columns:
                 schedule_df[column] = None
 
-        ordered_columns = core_columns + ['Season', 'League', 'Schedule URL']
+        ordered_columns = SCHEDULE_RAW_COLUMNS + ['Season', 'League', 'Schedule URL']
         schedule_df = schedule_df[ordered_columns]
-
-        rename_map = {
-            'Team': 'Home',
-            'PTS': 'HomePoints',
-            'Opp': 'Visitors',
-            'PTS.1': 'VisitorsPoints',
-            'OT': 'HasGoneOvertime',
-            'Date URL': 'DateURL'
-        }
-        schedule_df = schedule_df.rename(columns=rename_map)
+        # First pass: rename raw HTML column names to intermediate names
+        schedule_df = schedule_df.rename(columns=SCHEDULE_RAW_RENAME_MAP)
+        # Second pass: rename to final standardized schema names
+        schedule_df = schedule_df.rename(columns=SCHEDULE_COLUMN_RENAME_MAP)
 
         logger.info("Scraped %d schedule rows for %s %s", len(schedule_df), league, season)
         return schedule_df
@@ -353,7 +360,7 @@ class BasketballReferenceScraper:
     ) -> pd.DataFrame:
         if target_date is None or schedule_df.empty:
             return schedule_df
-        filtered = schedule_df.loc[schedule_df['Date'] == target_date]
+        filtered = schedule_df.loc[schedule_df[ScheduleColumns.GAME_DATE.name] == target_date]
         return filtered.reset_index(drop=True)
 
     def scrape_league_schedules(self, df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
@@ -361,17 +368,21 @@ class BasketballReferenceScraper:
         logger.info("Scraping schedules for %d season entries", len(base_df))
         schedules: list[pd.DataFrame] = []
         for _, row in base_df.iterrows():
-            schedule_url = row.get('Schedule URL')
+            schedule_url = row.get(SeasonColumns.SCHEDULE_URL.name)
             if not schedule_url:
                 continue
             try:
-                schedule_df = self.scrape_league_schedule(row['Season'], row['League'], schedule_url)
+                schedule_df = self.scrape_league_schedule(
+                    row[SeasonColumns.SEASON.name],
+                    row[SeasonColumns.LEAGUE.name],
+                    schedule_url,
+                )
                 schedules.append(schedule_df)
             except ScraperError as exc:
                 logger.error(
                     "Failed to scrape schedule for %s %s: %s",
-                    row['League'],
-                    row['Season'],
+                    row[SeasonColumns.LEAGUE.name],
+                    row[SeasonColumns.SEASON.name],
                     exc,
                 )
 
@@ -380,10 +391,7 @@ class BasketballReferenceScraper:
             logger.info("Aggregated %d schedule rows across %d leagues", len(combined), len(base_df))
             return combined
         logger.info("No schedules could be scraped from %d seasons", len(base_df))
-        return pd.DataFrame(columns=[
-            'Date', 'Home', 'HomePoints', 'Visitors', 'VisitorsPoints',
-            'HasGoneOvertime', 'Notes', 'DateURL', 'Season', 'League', 'Schedule URL'
-        ])
+        return create_empty_schedules_df()
 
     def scrape_boxscore_tables(
         self,
@@ -402,7 +410,7 @@ class BasketballReferenceScraper:
         logged_boxscores: set[str] = set()
 
         for _, row in schedule_df.iterrows():
-            date_url = row.get('DateURL')
+            date_url = row.get(ScheduleColumns.DATE_URL.name)
             if not date_url:
                 continue
 
@@ -410,9 +418,9 @@ class BasketballReferenceScraper:
                 if date_url not in logged_boxscores:
                     logger.info(
                         "Scraping boxscore for %s vs %s on %s (%s)",
-                        row.get('Home'),
-                        row.get('Visitors'),
-                        row.get('Date'),
+                        row.get(ScheduleColumns.TEAM_NAME_HOME.name),
+                        row.get(ScheduleColumns.TEAM_NAME_VISITORS.name),
+                        row.get(ScheduleColumns.GAME_DATE.name),
                         date_url,
                     )
                     logged_boxscores.add(date_url)
@@ -423,10 +431,10 @@ class BasketballReferenceScraper:
                     logger.error(
                         "Failed to fetch boxscore %s for %s vs %s (%s %s): %s",
                         date_url,
-                        row.get('Home'),
-                        row.get('Visitors'),
-                        row.get('League'),
-                        row.get('Season'),
+                        row.get(ScheduleColumns.TEAM_NAME_HOME.name),
+                        row.get(ScheduleColumns.TEAM_NAME_VISITORS.name),
+                        row.get(ScheduleColumns.LEAGUE_NAME.name),
+                        row.get(ScheduleColumns.SEASON.name),
                         exc,
                     )
                     skipped_dates.append(date_url)
@@ -438,7 +446,10 @@ class BasketballReferenceScraper:
                 continue
 
             row_tables: list[pd.DataFrame] = []
-            team_pairs = [('Visitors', row.get('Visitors')), ('Home', row.get('Home'))]
+            team_pairs = [
+                ('Visitors', row.get(ScheduleColumns.TEAM_NAME_VISITORS.name)),
+                ('Home', row.get(ScheduleColumns.TEAM_NAME_HOME.name)),
+            ]
             for role, team_name in team_pairs:
                 if team_name is None:
                     continue
@@ -446,13 +457,15 @@ class BasketballReferenceScraper:
                 if table_df is None:
                     continue
                 table_df = table_df.copy()
-                table_df['TeamRole'] = role
-                table_df['Team'] = team_name
-                table_df['Date'] = row.get('Date')
-                table_df['Season'] = row.get('Season')
-                table_df['League'] = row.get('League')
-                table_df['Schedule URL'] = row.get('Schedule URL')
-                table_df['DateURL'] = date_url
+                table_df[BoxscoreColumns.TEAM_ROLE.name] = role
+                table_df[BoxscoreColumns.TEAM.name] = team_name
+                table_df[BoxscoreColumns.DATE.name] = row.get(ScheduleColumns.GAME_DATE.name)
+                table_df[BoxscoreColumns.SEASON.name] = row.get(ScheduleColumns.SEASON.name)
+                table_df[BoxscoreColumns.LEAGUE.name] = row.get(ScheduleColumns.LEAGUE_NAME.name)
+                table_df[BoxscoreColumns.SCHEDULE_URL.name] = row.get(ScheduleColumns.SCHEDULE_URL.name)
+                table_df[BoxscoreColumns.DATE_URL.name] = date_url
+                # Rename columns to standardized schema names
+                table_df = table_df.rename(columns=BOXSCORE_COLUMN_RENAME_MAP)
                 row_tables.append(table_df)
 
             if not row_tables:
