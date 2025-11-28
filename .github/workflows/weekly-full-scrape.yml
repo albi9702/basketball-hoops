@@ -1,15 +1,15 @@
-name: Weekly Full Scrape
+name: Weekly Full Basketball Scrape
 
 on:
   schedule:
-    - cron: "0 6 * * 1"
+    # Run every Sunday at 2:00 AM UTC
+    - cron: '0 2 * * 0'
   workflow_dispatch:
 
 jobs:
-  full-refresh:
+  scrape:
     runs-on: ubuntu-latest
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -17,12 +17,19 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run full scrape
-        run: python -m src.main --mode full
+      - name: Run full scraper
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SCHEMA: ${{ secrets.DATABASE_SCHEMA }}
+          DATABASE_SCHEDULE_TABLE: ${{ secrets.DATABASE_SCHEDULE_TABLE }}
+          DATABASE_BOXSCORE_TABLE: ${{ secrets.DATABASE_BOXSCORE_TABLE }}
+          DATABASE_SEASON_TABLE: ${{ secrets.DATABASE_SEASON_TABLE }}
+        run: |
+          python src/main.py --mode full

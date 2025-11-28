@@ -1,15 +1,20 @@
-name: Daily Delta Scrape
+name: Daily Basketball Scrape
 
 on:
   schedule:
-    - cron: "15 5 * * *"
+    # Run daily at 6:00 AM UTC
+    - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: 'Target date (YYYY-MM-DD), defaults to today'
+        required: false
+        type: string
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -17,16 +22,23 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Determine target date
-        id: today
-        run: echo "value=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-
-      - name: Run daily scrape
-        run: python -m src.main --mode daily --target-date "${{ steps.today.outputs.value }}"
+      - name: Run daily scraper
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SCHEMA: ${{ secrets.DATABASE_SCHEMA }}
+          DATABASE_SCHEDULE_TABLE: ${{ secrets.DATABASE_SCHEDULE_TABLE }}
+          DATABASE_BOXSCORE_TABLE: ${{ secrets.DATABASE_BOXSCORE_TABLE }}
+          DATABASE_SEASON_TABLE: ${{ secrets.DATABASE_SEASON_TABLE }}
+        run: |
+          if [ -n "${{ github.event.inputs.target_date }}" ]; then
+            python src/main.py --mode daily --target-date "${{ github.event.inputs.target_date }}"
+          else
+            python src/main.py --mode daily
+          fi
