@@ -1,9 +1,9 @@
 name: Daily Basketball Scrape
 
 on:
-  # Schedule disabled - Basketball Reference blocks GitHub Actions IPs
-  # schedule:
-  #   - cron: '0 6 * * *'
+  schedule:
+    # Run daily at 6:00 AM UTC
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       target_date:
@@ -32,6 +32,7 @@ jobs:
       - name: Run daily scraper
         env:
           PYTHONPATH: ${{ github.workspace }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_SCHEMA: ${{ secrets.DATABASE_SCHEMA }}
           DATABASE_SCHEDULE_TABLE: ${{ secrets.DATABASE_SCHEDULE_TABLE }}

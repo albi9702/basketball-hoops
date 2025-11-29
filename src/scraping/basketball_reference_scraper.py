@@ -15,6 +15,7 @@ import requests
 from bs4 import BeautifulSoup, Comment, Tag
 
 from src.configs.logging_config import get_logger
+from src.configs.settings import ScraperAPIConfig
 from src.configs.schema import (
     ScheduleColumns,
     SeasonColumns,
@@ -73,6 +74,7 @@ class BasketballReferenceScraper:
         session: Optional[requests.Session] = None,
         request_delay: Optional[float] = None,
         max_retries: Optional[int] = None,
+        use_proxy: Optional[bool] = None,
     ) -> None:
         """
         Initialize the scraper.
@@ -87,6 +89,8 @@ class BasketballReferenceScraper:
             Seconds to wait between requests (default: 2.0).
         max_retries : Optional[int]
             Maximum retry attempts for transient failures (default: 3).
+        use_proxy : Optional[bool]
+            Whether to use ScraperAPI proxy. Defaults to True if SCRAPER_API_KEY is set.
         """
         self.base_url = self.BASE_URL.rstrip("/")
         relative_path = relative_path or self.INTERNATIONAL_PATH
@@ -98,10 +102,17 @@ class BasketballReferenceScraper:
             request_delay if request_delay is not None else self.REQUEST_DELAY_SECONDS
         )
         self.max_retries = max_retries if max_retries is not None else self.MAX_RETRIES
+        
+        # Auto-detect ScraperAPI if not explicitly set
+        self.use_proxy = use_proxy if use_proxy is not None else ScraperAPIConfig.is_enabled()
+        if self.use_proxy:
+            logger.info("ScraperAPI proxy enabled")
 
     def fetch_data(self, url: Optional[str] = None) -> str:
         """
         Fetch HTML content from a URL with retry logic.
+        
+        Uses ScraperAPI proxy if SCRAPER_API_KEY is configured.
 
         Raises
         ------
@@ -109,6 +120,14 @@ class BasketballReferenceScraper:
             If the request fails after all retries.
         """
         target_url = url or self.league_url
+        
+        # Use ScraperAPI proxy if enabled
+        if self.use_proxy:
+            fetch_url = ScraperAPIConfig.get_proxy_url(target_url)
+            logger.debug("Using ScraperAPI proxy for %s", target_url)
+        else:
+            fetch_url = target_url
+        
         last_exc: Optional[Exception] = None
 
         for attempt in range(1, self.max_retries + 1):
@@ -116,7 +135,12 @@ class BasketballReferenceScraper:
             jitter = random.uniform(0.5, 2.0)
             time.sleep(self.request_delay + jitter)
             try:
-                response = self.session.get(target_url, timeout=30)
+                # ScraperAPI handles headers, so use minimal headers when proxied
+                if self.use_proxy:
+                    response = self.session.get(fetch_url, timeout=60)
+                else:
+                    response = self.session.get(fetch_url, timeout=30)
+                    
                 if response.status_code == 200:
                     logger.debug("Fetched %s on attempt %d", target_url, attempt)
                     return response.text

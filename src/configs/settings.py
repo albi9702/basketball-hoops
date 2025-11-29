@@ -18,6 +18,27 @@ class Config:
     TIMEOUT = 10  # Timeout for requests in seconds
 
 
+class ScraperAPIConfig:
+    """Configuration for ScraperAPI proxy service."""
+    
+    API_KEY = os.getenv("SCRAPER_API_KEY")
+    BASE_URL = "http://api.scraperapi.com"
+    
+    @classmethod
+    def is_enabled(cls) -> bool:
+        """Check if ScraperAPI is configured."""
+        return bool(cls.API_KEY)
+    
+    @classmethod
+    def get_proxy_url(cls, target_url: str) -> str:
+        """Build the ScraperAPI proxy URL for a target URL."""
+        if not cls.API_KEY:
+            raise ValueError("SCRAPER_API_KEY not configured")
+        # Using URL parameter method for ScraperAPI
+        from urllib.parse import quote
+        return f"{cls.BASE_URL}?api_key={cls.API_KEY}&url={quote(target_url)}"
+
+
 class DatabaseConfig:
     """Centralized database naming so schema/table names live in one place."""
 
