@@ -11,6 +11,7 @@ from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 
 from src.configs.logging_config import get_logger
 from src.configs.settings import DatabaseConfig
+from src.configs.schema import SeasonColumns, ScheduleColumns, BoxscoreColumns
 
 logger = get_logger(__name__)
 
@@ -45,12 +46,97 @@ class DatabaseStore:
     # Public API
     # ------------------------------------------------------------------
     def save_seasons(self, df: pd.DataFrame, if_exists: str = "replace") -> int:
+        """Save seasons DataFrame with auto-generated SeasonID."""
+        if df is None or df.empty:
+            return 0
+        
+        # Generate SeasonID if not present
+        if SeasonColumns.SEASON_ID.name not in df.columns:
+            df = df.copy()
+            df[SeasonColumns.SEASON_ID.name] = df.apply(
+                lambda row: SeasonColumns.generate_id(
+                    row[SeasonColumns.SEASON.name],
+                    row[SeasonColumns.LEAGUE.name]
+                ),
+                axis=1
+            )
+            # Reorder columns to put ID first
+            cols = [SeasonColumns.SEASON_ID.name] + [c for c in df.columns if c != SeasonColumns.SEASON_ID.name]
+            df = df[cols]
+        
         return self._write_dataframe(df, self.season_table, if_exists)
 
     def save_schedules(self, df: pd.DataFrame, if_exists: str = "replace") -> int:
+        """Save schedules DataFrame with auto-generated GameID and SeasonID."""
+        if df is None or df.empty:
+            return 0
+        
+        df = df.copy()
+        
+        # Generate SeasonID (foreign key) if not present
+        if ScheduleColumns.SEASON_ID.name not in df.columns:
+            df[ScheduleColumns.SEASON_ID.name] = df.apply(
+                lambda row: ScheduleColumns.generate_season_id(
+                    row[ScheduleColumns.SEASON.name],
+                    row[ScheduleColumns.LEAGUE_NAME.name]
+                ),
+                axis=1
+            )
+        
+        # Generate GameID (primary key) if not present
+        if ScheduleColumns.GAME_ID.name not in df.columns:
+            df[ScheduleColumns.GAME_ID.name] = df.apply(
+                lambda row: ScheduleColumns.generate_id(
+                    str(row[ScheduleColumns.GAME_DATE.name]),
+                    row[ScheduleColumns.TEAM_NAME_HOME.name],
+                    row[ScheduleColumns.TEAM_NAME_VISITORS.name],
+                    row[ScheduleColumns.SEASON.name],
+                    row[ScheduleColumns.LEAGUE_NAME.name]
+                ),
+                axis=1
+            )
+        
+        # Reorder columns to put IDs first
+        id_cols = [ScheduleColumns.GAME_ID.name, ScheduleColumns.SEASON_ID.name]
+        other_cols = [c for c in df.columns if c not in id_cols]
+        df = df[id_cols + other_cols]
+        
         return self._write_dataframe(df, self.schedule_table, if_exists)
 
     def save_boxscores(self, df: pd.DataFrame, if_exists: str = "replace") -> int:
+        """Save boxscores DataFrame with auto-generated BoxscoreID and GameID."""
+        if df is None or df.empty:
+            return 0
+        
+        df = df.copy()
+        
+        # Generate GameID (foreign key) using DateURL which uniquely identifies a game
+        if BoxscoreColumns.GAME_ID.name not in df.columns:
+            df[BoxscoreColumns.GAME_ID.name] = df.apply(
+                lambda row: BoxscoreColumns.generate_game_id_from_url(
+                    row.get(BoxscoreColumns.DATE_URL.name, ""),
+                    row.get(BoxscoreColumns.SEASON.name, ""),
+                    row.get(BoxscoreColumns.LEAGUE.name, "")
+                ),
+                axis=1
+            )
+        
+        # Generate BoxscoreID (primary key) if not present
+        if BoxscoreColumns.BOXSCORE_ID.name not in df.columns:
+            df[BoxscoreColumns.BOXSCORE_ID.name] = df.apply(
+                lambda row: BoxscoreColumns.generate_id(
+                    row[BoxscoreColumns.GAME_ID.name],
+                    row.get(BoxscoreColumns.PLAYER_NAME.name, ""),
+                    row.get(BoxscoreColumns.TEAM.name, "")
+                ),
+                axis=1
+            )
+        
+        # Reorder columns to put IDs first
+        id_cols = [BoxscoreColumns.BOXSCORE_ID.name, BoxscoreColumns.GAME_ID.name]
+        other_cols = [c for c in df.columns if c not in id_cols]
+        df = df[id_cols + other_cols]
+        
         return self._write_dataframe(df, self.boxscore_table, if_exists)
 
     def row_count(self, table_name: str, schema: Optional[str] = None) -> int:

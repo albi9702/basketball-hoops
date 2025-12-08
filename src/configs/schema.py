@@ -7,12 +7,54 @@ consistency across the application.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import pandas as pd
 
 from src.configs.settings import DatabaseConfig
+
+
+# =============================================================================
+# Helper Functions for String Normalization
+# =============================================================================
+
+def normalize_string(text: str) -> str:
+    """Normalize a string for use in IDs - handles Unicode characters properly.
+    
+    Converts accented characters to their ASCII equivalents when possible,
+    and removes or replaces other special characters.
+    """
+    if not text:
+        return ""
+    # Normalize Unicode to decomposed form (NFD), then encode to ASCII ignoring errors
+    # This converts 'ü' -> 'u', 'ï' -> 'i', etc.
+    normalized = unicodedata.normalize('NFD', text)
+    ascii_text = normalized.encode('ascii', 'ignore').decode('ascii')
+    return ascii_text
+
+
+def clean_for_id(text: str, max_length: int = 0) -> str:
+    """Clean and normalize a string for use in IDs.
+    
+    - Normalizes Unicode characters (ü -> u, ï -> i, etc.)
+    - Replaces spaces with underscores
+    - Removes special characters
+    - Optionally truncates to max_length
+    """
+    if not text:
+        return "Unknown"
+    # First normalize Unicode
+    cleaned = normalize_string(str(text))
+    # Replace spaces and hyphens with underscores
+    cleaned = cleaned.replace(" ", "_").replace("-", "_")
+    # Remove any remaining non-alphanumeric characters except underscores
+    cleaned = ''.join(c for c in cleaned if c.isalnum() or c == '_')
+    # Apply max length if specified
+    if max_length > 0:
+        cleaned = cleaned[:max_length]
+    return cleaned or "Unknown"
 
 
 # =============================================================================
@@ -26,6 +68,9 @@ class Column:
     dtype: str  # pandas dtype string
     nullable: bool = True
     description: str = ""
+    is_primary_key: bool = False
+    is_foreign_key: bool = False
+    references: Optional[str] = None  # "table.column" for foreign keys
 
 
 # =============================================================================
@@ -33,7 +78,15 @@ class Column:
 # =============================================================================
 
 class SeasonColumns:
-    """Column definitions for the seasons table."""
+    """Column definitions for the seasons table.
+    
+    Primary Key: SeasonID (auto-generated composite of Season + League)
+    """
+    # Primary key
+    SEASON_ID = Column("SeasonID", "str", nullable=False, is_primary_key=True,
+                       description="Unique identifier for season (Season_League)")
+    
+    # Data columns
     SEASON = Column("Season", "str", nullable=False, description="Season identifier (e.g., '2024-25')")
     SEASON_URL = Column("SeasonURL", "str", description="URL to the season page")
     LEAGUE = Column("League", "str", nullable=False, description="League name (e.g., 'EuroLeague')")
@@ -42,6 +95,11 @@ class SeasonColumns:
 
     @classmethod
     def all_columns(cls) -> list[Column]:
+        return [cls.SEASON_ID, cls.SEASON, cls.SEASON_URL, cls.LEAGUE, cls.LEAGUE_URL, cls.SCHEDULE_URL]
+
+    @classmethod
+    def data_columns(cls) -> list[Column]:
+        """Columns without the primary key (for scraping)."""
         return [cls.SEASON, cls.SEASON_URL, cls.LEAGUE, cls.LEAGUE_URL, cls.SCHEDULE_URL]
 
     @classmethod
@@ -49,8 +107,24 @@ class SeasonColumns:
         return [col.name for col in cls.all_columns()]
 
     @classmethod
+    def data_names(cls) -> list[str]:
+        """Column names without primary key."""
+        return [col.name for col in cls.data_columns()]
+
+    @classmethod
     def required(cls) -> list[str]:
         return [col.name for col in cls.all_columns() if not col.nullable]
+    
+    @classmethod
+    def primary_key(cls) -> str:
+        return cls.SEASON_ID.name
+    
+    @staticmethod
+    def generate_id(season: str, league: str) -> str:
+        """Generate SeasonID from season and league."""
+        clean_season = clean_for_id(season)
+        clean_league = clean_for_id(league)
+        return f"{clean_season}_{clean_league}"
 
 
 # =============================================================================
@@ -58,7 +132,21 @@ class SeasonColumns:
 # =============================================================================
 
 class ScheduleColumns:
-    """Column definitions for the schedules table."""
+    """Column definitions for the schedules table.
+    
+    Primary Key: GameID (auto-generated from date, teams, season, league)
+    Foreign Key: SeasonID references seasons.SeasonID
+    """
+    # Primary key
+    GAME_ID = Column("GameID", "str", nullable=False, is_primary_key=True,
+                     description="Unique game identifier")
+    
+    # Foreign key
+    SEASON_ID = Column("SeasonID", "str", nullable=False, is_foreign_key=True,
+                       references="seasons.SeasonID",
+                       description="Reference to seasons table")
+    
+    # Data columns
     GAME_DATE = Column("GameDate", "datetime64[ns]", nullable=False, description="Game date")
     TEAM_NAME_HOME = Column("TeamNameHome", "str", nullable=False, description="Home team name")
     TEAM_HOME_POINTS = Column("TeamHomePoints", "Int64", description="Home team score")
@@ -74,6 +162,16 @@ class ScheduleColumns:
     @classmethod
     def all_columns(cls) -> list[Column]:
         return [
+            cls.GAME_ID, cls.SEASON_ID,
+            cls.GAME_DATE, cls.TEAM_NAME_HOME, cls.TEAM_HOME_POINTS, cls.TEAM_NAME_VISITORS,
+            cls.TEAM_VISITORS_POINTS, cls.HAS_GONE_OVERTIME, cls.NOTES, cls.DATE_URL,
+            cls.SEASON, cls.LEAGUE_NAME, cls.SCHEDULE_URL,
+        ]
+
+    @classmethod
+    def data_columns(cls) -> list[Column]:
+        """Columns without primary/foreign keys (for scraping)."""
+        return [
             cls.GAME_DATE, cls.TEAM_NAME_HOME, cls.TEAM_HOME_POINTS, cls.TEAM_NAME_VISITORS,
             cls.TEAM_VISITORS_POINTS, cls.HAS_GONE_OVERTIME, cls.NOTES, cls.DATE_URL,
             cls.SEASON, cls.LEAGUE_NAME, cls.SCHEDULE_URL,
@@ -84,8 +182,37 @@ class ScheduleColumns:
         return [col.name for col in cls.all_columns()]
 
     @classmethod
+    def data_names(cls) -> list[str]:
+        """Column names without primary/foreign keys."""
+        return [col.name for col in cls.data_columns()]
+
+    @classmethod
     def required(cls) -> list[str]:
         return [col.name for col in cls.all_columns() if not col.nullable]
+    
+    @classmethod
+    def primary_key(cls) -> str:
+        return cls.GAME_ID.name
+    
+    @classmethod
+    def foreign_key(cls) -> str:
+        return cls.SEASON_ID.name
+    
+    @staticmethod
+    def generate_id(game_date: str, home_team: str, visitor_team: str, season: str, league: str) -> str:
+        """Generate GameID from game details."""
+        # Clean components with proper Unicode handling
+        clean_date = str(game_date).replace("-", "").replace(" ", "")[:8]  # YYYYMMDD
+        clean_home = clean_for_id(home_team, max_length=15)
+        clean_visitor = clean_for_id(visitor_team, max_length=15)
+        clean_season = clean_for_id(season)
+        clean_league = clean_for_id(league, max_length=15)
+        return f"{clean_date}_{clean_home}_vs_{clean_visitor}_{clean_season}_{clean_league}"
+    
+    @staticmethod
+    def generate_season_id(season: str, league: str) -> str:
+        """Generate SeasonID for foreign key reference."""
+        return SeasonColumns.generate_id(season, league)
 
 
 # =============================================================================
@@ -93,7 +220,20 @@ class ScheduleColumns:
 # =============================================================================
 
 class BoxscoreColumns:
-    """Column definitions for the boxscores table."""
+    """Column definitions for the boxscores table.
+    
+    Primary Key: BoxscoreID (auto-generated)
+    Foreign Key: GameID references schedules.GameID
+    """
+    # Primary key
+    BOXSCORE_ID = Column("BoxscoreID", "str", nullable=False, is_primary_key=True,
+                         description="Unique boxscore entry identifier")
+    
+    # Foreign key
+    GAME_ID = Column("GameID", "str", nullable=False, is_foreign_key=True,
+                     references="schedules.GameID",
+                     description="Reference to schedules table")
+    
     # Player info
     PLAYER_NAME = Column("PlayerName", "str", description="Player name")
     
@@ -132,6 +272,41 @@ class BoxscoreColumns:
     @classmethod
     def all_columns(cls) -> list[Column]:
         """All columns in the boxscores table."""
+        return [
+            cls.BOXSCORE_ID,
+            cls.GAME_ID,
+            cls.PLAYER_NAME,
+            cls.MINUTES_PLAYED,
+            cls.FIELD_GOALS_MADE,
+            cls.FIELD_GOALS_ATTEMPTED,
+            cls.FIELD_GOAL_PERCENTAGE,
+            cls.THREE_POINT_MADE,
+            cls.THREE_POINT_ATTEMPTED,
+            cls.THREE_POINT_PERCENTAGE,
+            cls.FREE_THROWS_MADE,
+            cls.FREE_THROWS_ATTEMPTED,
+            cls.FREE_THROW_PERCENTAGE,
+            cls.OFFENSIVE_REBOUNDS,
+            cls.DEFENSIVE_REBOUNDS,
+            cls.TOTAL_REBOUNDS,
+            cls.ASSISTS,
+            cls.STEALS,
+            cls.BLOCKS,
+            cls.TURNOVERS,
+            cls.PERSONAL_FOULS,
+            cls.POINTS,
+            cls.TEAM_ROLE,
+            cls.TEAM,
+            cls.DATE,
+            cls.SEASON,
+            cls.LEAGUE,
+            cls.SCHEDULE_URL,
+            cls.DATE_URL,
+        ]
+
+    @classmethod
+    def data_columns(cls) -> list[Column]:
+        """Columns without primary/foreign keys (for scraping)."""
         return [
             cls.PLAYER_NAME,
             cls.MINUTES_PLAYED,
@@ -175,12 +350,51 @@ class BoxscoreColumns:
         return [col.name for col in cls.all_columns()]
 
     @classmethod
+    def data_names(cls) -> list[str]:
+        """Column names without primary/foreign keys."""
+        return [col.name for col in cls.data_columns()]
+
+    @classmethod
     def context_names(cls) -> list[str]:
         return [col.name for col in cls.context_columns()]
 
     @classmethod
     def required(cls) -> list[str]:
         return [col.name for col in cls.all_columns() if not col.nullable]
+    
+    @classmethod
+    def primary_key(cls) -> str:
+        return cls.BOXSCORE_ID.name
+    
+    @classmethod
+    def foreign_key(cls) -> str:
+        return cls.GAME_ID.name
+    
+    @staticmethod
+    def generate_id(game_id: str, player_name: str, team: str) -> str:
+        """Generate BoxscoreID from game and player details."""
+        clean_player = clean_for_id(player_name, max_length=25)
+        clean_team = clean_for_id(team, max_length=15)
+        return f"{game_id}_{clean_player}_{clean_team}"
+    
+    @staticmethod
+    def generate_game_id_from_url(date_url: str, season: str, league: str) -> str:
+        """Generate GameID from boxscore URL (for boxscore rows without full team info).
+        
+        Uses the date URL path which uniquely identifies a game.
+        """
+        if not date_url:
+            return "UNKNOWN_GAME"
+        # Extract the path component from URL (e.g., "/boxscores/202410030ATL.html" -> "202410030ATL")
+        url_key = date_url.split("/")[-1].replace(".html", "") if "/" in date_url else date_url
+        clean_season = clean_for_id(season)
+        clean_league = clean_for_id(league, max_length=15)
+        return f"{url_key}_{clean_season}_{clean_league}"
+    
+    @staticmethod
+    def generate_game_id(game_date: str, home_team: str, visitor_team: str, season: str, league: str) -> str:
+        """Generate GameID for foreign key reference (when full game info is available)."""
+        return ScheduleColumns.generate_id(game_date, home_team, visitor_team, season, league)
 
 
 # =============================================================================

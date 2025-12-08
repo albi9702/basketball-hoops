@@ -67,10 +67,10 @@ def main(mode: str = "full", target_date: Optional[date] = None) -> None:
         logger.warning("Database persistence disabled: %s", exc)
         store = None
 
-    seasons_df = scraper.scrape().head(1)
+    seasons_df = scraper.scrape().head(22)
     logger.info("Scraped %d season rows", len(seasons_df))
 
-    schedules_df = scraper.scrape_league_schedules(seasons_df).head(10)
+    schedules_df = scraper.scrape_league_schedules(seasons_df)
     if target_date:
         before = len(schedules_df)
         schedules_df = scraper.filter_schedule_by_date(schedules_df, target_date)

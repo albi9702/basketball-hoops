@@ -143,6 +143,8 @@ class BasketballReferenceScraper:
                     
                 if response.status_code == 200:
                     logger.debug("Fetched %s on attempt %d", target_url, attempt)
+                    # Ensure proper UTF-8 encoding for international characters
+                    response.encoding = response.apparent_encoding or 'utf-8'
                     return response.text
 
                 if response.status_code in self.RETRY_STATUS_CODES:
